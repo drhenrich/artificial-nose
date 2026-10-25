@@ -5,10 +5,41 @@ Cluster aus 10 Tang Nano 20K führt das biologisch beschränkte Spiking Neural N
 [`Vick-MIRE/flywire-olfactory-snn`](https://huggingface.co/Vick-MIRE/flywire-olfactory-snn)
 in Echtzeit aus, und der Roboter reagiert auf das Ergebnis (Geruch melden oder zur Quelle laufen).
 
-> **Stand der Annahmen:** Die Modelldaten (52 Eingänge, 800 LIF-Neuronen, dünnbesetzte
-> 800×800-Konnektom-Maske, 500 Klassen, Norse/PyTorch, `.safetensors` + `connectome_mask.npz`)
-> stammen aus der Modellbeschreibung. Vor dem HDL-Entwurf mit
-> [`tools/inspect_model.py`](tools/inspect_model.py) vermessen (Abschnitt 9).
+> **Stand:** Die Architektur ist aus der Model Card übernommen (Abschnitt 0). Offen sind noch
+> die Dichte der Maske, die genaue Vorzeichen-/Betragsfunktion und die LIF-Parameter in
+> `modeling_snn.py`. Diese Punkte vor dem HDL-Entwurf mit
+> [`tools/inspect_model.py`](tools/inspect_model.py) und durch Lesen von `modeling_snn.py`
+> klären (Abschnitt 9).
+
+---
+
+## 0. Modell laut Model Card
+
+```
+x (52 DoOR-Rezeptoren, ratenkodiert)
+  → Poisson-Spikes  → Linear(52 → 800, ohne Bias)                 = I_in
+  → 20 Zeitschritte LIF, rekurrent: I_rec = spk_{t-1} · (W_rec ⊙ mask ⊙ sign)ᵀ
+  → mittlere Spikerate über 20 Schritte
+  → Linear(800 → 500)                                              = Logits
+```
+
+| Merkmal | Wert | Folge für die Hardware |
+|---|---|---|
+| Hidden-Neuronen | 800 (Projektionsneuronen des Antennallobus + Kenyonzellen des Pilzkörpers) | Kenyonzellen feuern biologisch sehr spärlich, das passt gut zur ereignisgetriebenen Verarbeitung |
+| Zeitschritte | **20** | Eine Inferenz dauert ≈ 0,4 ms (Abschnitt 5) |
+| Neuronenmodell | Norse `LIFCell`, `method="super"`, α = 100 | Surrogate und α wirken nur im Training, in der Inferenz ist es eine harte Schwelle |
+| Rekurrente Gewichte | `W_rec ⊙ mask ⊙ sign`, nur die Beträge sind gelernt | Effektive Gewichte offline vorberechnen. Das Vorzeichen hängt am Transmitter des präsynaptischen Neurons (ACh/DA/5-HT/OA → +, GABA/Glu → −) und gehört bei Dale-Konformität **pro präsynaptischem Neuron** in die Zeigertabelle. Die Synapse speichert dann nur den Betrag |
+| Konvention | `spk · Wᵀ` → `W[post, pre]` | Zeilen = Ziel, Spalten = Quelle. Die CSR-Liste wird nach Spalten (präsynaptisch) sortiert |
+| Readout | Mittelwert der Spikes → Linear (800 → 500) | Die Hardware zählt Spikes. Der Faktor 1/20 wird in `W_out` eingerechnet, kein Teiler nötig |
+| Auswertung | 5× Monte-Carlo-Mittel über die Poisson-Kodierung | Auf dem FPGA 5 Durchläufe mit verschiedenen LFSR-Seeds und die Logits summieren (≈ 2 ms) |
+| Daten | DoOR 2.0 (CC BY-SA 4.0), 500 Odorant-Klassen | Siehe Lizenz-Risiko in Abschnitt 10 |
+
+**Noch in `modeling_snn.py` prüfen:**
+1. Werden Norse-Standardparameter genutzt (`tau_mem_inv=100`, `tau_syn_inv=200`, `v_th=1`, `v_reset=0`, `dt=1 ms`) oder eigene `LIFParameters`?
+2. Wie entstehen die Beträge (`abs`, `relu`, `softplus`, …)?
+3. Wie wird `x` vor der Poisson-Kodierung auf [0, 1] gebracht (clamp/sigmoid/Normierung)?
+4. Wird kodiert und dann linear projiziert (wie in Abschnitt 4.3 angenommen) oder umgekehrt?
+5. Hat `Linear(800 → 500)` einen Bias?
 
 ---
 
@@ -20,11 +51,11 @@ Spike-Kommunikation), unterschätzt aber den Chip und setzt den Engpass an die f
 | Punkt | KI-Antwort | Richtig |
 |---|---|---|
 | Speicher GW2AR-18 | „~828 Kb BRAM“ | 828 Kbit BSRAM (46 × 18 Kbit) **plus 64 Mbit SDRAM im selben Gehäuse** (GW2AR = mit eingebettetem SDRAM) |
-| Engpass | rekurrente 800×800-Matrix | Die **Readout-Schicht** 800×500 (≈3,2 Mbit bei INT8) ist der größte Block. Die rekurrente Matrix ist bei ~5–15 % Dichte nur ~0,3–1 Mbit |
+| Engpass | rekurrente 800×800-Matrix | Die **Readout-Schicht** 800×500 (≈3,2 Mbit bei INT8) ist der größte Block. Die rekurrente Matrix ist bei ~5–15 % Dichte nur ~0,3–1 Mbit (echte Dichte steht in `connectome_meta.json`) |
 | Rechenleistung | Cluster nötig, weil ein Chip zu klein ist | Rechnerisch reichen 1–3 Boards. Das Netz ist ereignisgetrieben, ein Zeitschritt kostet einige tausend Additionen |
 | Partitionierung mit METIS | Kanten zwischen FPGAs minimieren | Mit einem **Spike-Vektor-Broadcast** (Abschnitt 4) bekommt jedes Board ohnehin alle 800 Spikes. Wie viele Kanten Boardgrenzen kreuzen, spielt dann keine Rolle; METIS ist unnötig |
-| Eingang | 52 Kanäle direkt einspeisen | Die 52 Eingänge sind Rezeptor-/Glomerulus-Kanäle der Fliege. **Kein technischer Gassensor liefert diese Signale.** Eine Adapterschicht muss neu trainiert werden (Abschnitt 3) |
-| Ausgang | 500 Klassen | Die 500 Geruchsklassen kommen aus dem Trainingsdatensatz und haben nichts mit deinen Sensoren zu tun. Die Readout-Schicht wird für eigene Klassen neu trainiert |
+| Eingang | 52 Kanäle direkt einspeisen | Die 52 Eingänge sind die **DoOR-Antworten von Fliegen-Duftrezeptoren** (Or/Ir-Gene). **Kein technischer Gassensor liefert diese Signale.** Eine Adapterschicht muss neu trainiert werden (Abschnitt 3) |
+| Ausgang | 500 Klassen | Die 500 Klassen sind DoOR-Odorants. Das Netz wurde auf Rezeptorprofile trainiert, nicht auf Sensordaten. Die Readout-Schicht wird für eigene Klassen neu trainiert |
 
 **Konsequenz:** Der Cluster ist sinnvoll, aber aus anderen Gründen als in der KI-Antwort.
 Er verteilt den Speicher, sodass alles im BSRAM bleibt und kein SDRAM-Controller nötig ist.
@@ -90,15 +121,20 @@ die Luft, daher hilft ein Prallblech.
 
 ### 3.3 Neu trainieren statt direkt einspeisen
 
-Das Konnektom (`W_rec` + Maske) ist der biologische Teil und bleibt **eingefroren**.
-Neu trainiert werden:
+Das Konnektom (Maske + Vorzeichen, idealerweise auch die gelernten Beträge von `W_rec`) ist der
+biologische Teil und bleibt **eingefroren**. Neu trainiert werden:
 
 - `W_in` (52 → 800) auf deine Sensormerkmale (oder ein vorgeschalteter 52×52-Adapter, der Sensorkanäle auf „Fliegenrezeptoren“ abbildet, wenn die originale `W_in` erhalten bleiben soll)
 - `W_out` (800 → K) für deine eigenen K Klassen (z. B. Luft, Ethanol, Kaffee, Rauch, Lösungsmittel, Unbekannt)
 
-Training in Norse mit Surrogate Gradients und **quantisierungsbewusstem Training** (Gewichte
-im Forward-Pass auf INT8 runden, Membranpotential auf 16 Bit begrenzen). Dann stimmt das
-FPGA-Ergebnis bitgenau mit dem Python-Referenzmodell überein.
+Training mit dem vorhandenen `MaskedRecurrentLIFSNN` (Adam, CrossEntropy, 20 Schritte wie im
+Original), ergänzt um **quantisierungsbewusstes Training**: Gewichte im Forward-Pass auf INT8
+runden, Membranpotential auf 16 Bit begrenzen. Dann stimmt das FPGA-Ergebnis bitgenau mit dem
+Python-Referenzmodell überein.
+
+Gut gelöst ist das als **Zwei-Stufen-Adapter**: Die Sensormerkmale werden auf 52
+„Pseudo-Rezeptoren“ abgebildet, das originale `W_in` bleibt dahinter erhalten. Dann wird zuerst
+nur der Adapter (+ `W_out`) trainiert. Erst wenn das nicht reicht, wird `W_in` freigegeben.
 
 Datensatz: auf dem Roboter aufnehmen (stehend und laufend). Pro Klasse mehrere Sessions an
 verschiedenen Tagen, wegen Sensordrift, Temperatur und Feuchte.
@@ -141,15 +177,21 @@ Ablauf pro Zeitschritt *t*:
            I[i] += W_rec[j,i]
 3. Für jeden Eingangskanal k mit Spike e[k]=1 (von B0 mitgesendet):
            I[i] += W_in[k,i]   (für alle i dieses Boards)
-4. Für i = 0..99:                        // LIF-Update, Norse-kompatibel
-       v[i] += (I[i] - v[i]) >>> SHIFT_MEM   // Leak als Shift: dt/tau = 2^-SHIFT
-       I[i] -= I[i] >>> SHIFT_SYN
-       if v[i] >= V_TH: spike[i]=1; v[i]=V_RESET; count[i]++
+4. Für i = 0..99:                        // LIF-Update in Norse-Reihenfolge (LIFCell)
+       v_dec = v[i] + K_MEM·(V_LEAK − v[i] + i_syn[i])   // K_MEM = dt·tau_mem_inv (Std: 0,1)
+       i_dec = i_syn[i] − K_SYN·i_syn[i]                 // K_SYN = dt·tau_syn_inv (Std: 0,2)
+       z     = (v_dec > V_TH)                            // harte Schwelle in der Inferenz
+       v[i]  = z ? V_RESET : v_dec
+       i_syn[i] = i_dec + I[i];  I[i] = 0                // Eingang erst NACH dem v-Update
+       if z: spike[i]=1; count[i]++
 5. Lege eigene 100 Spike-Bits in den Ring-Frame
 ```
 
-- `tau_mem` und `tau_syn` werden beim Training auf Werte festgelegt, bei denen `dt/tau` eine Zweierpotenz ist. Das spart Multiplizierer.
-- Gewichte INT8, Ströme und Potentiale INT16 mit Sättigung
+- **Wichtig für Bitgenauigkeit:** Norse rechnet `v` mit dem *alten* Synapsenstrom und addiert den neuen Eingang erst danach auf den Strom. Ein naiver LIF-Kern liegt deshalb um einen Zeitschritt daneben.
+- Die Norse-Standardwerte 0,1 und 0,2 sind keine Zweierpotenzen. Statt das Netz für Shift-Leaks neu zu trainieren, multipliziert der Kern mit Q0.16-Konstanten. Ein zeitmultiplexter Kern braucht dafür 2 der 48 Multiplizierer, so bleiben die vortrainierten Gewichte direkt nutzbar.
+- Gewichte INT8, Ströme und Potentiale INT16 mit Sättigung. Die Schwelle `v_th = 1,0` legt die Fixpunkt-Skalierung fest, z. B. 1,0 ≙ 2¹⁰.
+- Vorzeichen: Ist die Maske Dale-konform (Skript prüft das), speichert die Zeigertabelle das Vorzeichen pro präsynaptischem Neuron. Die Synapsen enthalten dann nur 8-Bit-Beträge, was eine Stufe mehr Auflösung bringt.
+- **Poisson-Eingang:** Ein LFSR pro Kanal auf B0 vergleicht pro Zeitschritt `rand < x_k` und setzt so `e[k]`. Für die 5 Monte-Carlo-Durchläufe startet das LFSR mit verschiedenen Seeds.
 - Speicher in BSRAM:
   - `ptr[800]`: Startadresse der Synapsenliste je präsynaptischem Neuron
   - `syn[]`: {Ziel-Index 7 Bit, Gewicht 8 Bit}
@@ -159,20 +201,21 @@ Ablauf pro Zeitschritt *t*:
 
 ### 4.4 Readout verteilt berechnen
 
-Am Ende eines Inferenzfensters (T Zeitschritte) berechnet jedes Board die Teilsumme über
+Am Ende eines Inferenzfensters (T = 20 Zeitschritte) berechnet jedes Board die Teilsumme über
 seine eigenen Neuronen:
 
 ```
-logit_partial[c] = Σ_i count[i] · W_out[i,c]       (100·K MACs, Multiplizierer)
+logit_partial[c] = Σ_i count[i] · W_out'[i,c]      (100·K MACs, Multiplizierer)
+W_out' = W_out / 20      (Mittelwert über 20 Schritte, offline eingerechnet; Bias addiert B9)
 ```
 
 Die Teilsummen laufen über den Ring nach B9 und werden dort addiert. Damit braucht kein Board
 die ganze 800×K-Matrix. Bei K = 500 sind das ≈ 390 Kbit pro Board und passen noch ins BSRAM.
 Bei K ≈ 10 eigenen Klassen ist die Readout-Schicht vernachlässigbar.
 
-Vorher prüfen, ob das Originalmodell auf Spike-Zählern ausliest oder auf dem Membranpotential
-einer nicht feuernden LI-Ausgangszelle. Die zweite Variante läuft genauso, nur werden die
-Spikes dann bei jedem Zeitschritt akkumuliert statt am Fensterende.
+Laut Model Card liest das Modell auf zeitgemittelten Spikeraten aus, genau passend zu den
+Zählern. `count` braucht nur 5 Bit (0–20). Die 100·K MACs laufen bei K = 500 in ≈ 1 ms und
+bei eigenen 10 Klassen in ≈ 20 µs.
 
 ---
 
@@ -201,9 +244,10 @@ Frame (TDM, 4-Bit-Bus):  SYNC | t[16] | CMD[8] | e[52] | s[800] | CRC8
 | LIF-Update 100 Neuronen | 100 | 2 µs |
 | **Summe pro Zeitschritt** | | **≈ 20 µs → ~50.000 Schritte/s** |
 
-Eine Inferenz mit T = 100 Schritten dauert etwa 2 ms. Die MOX-Sensoren reagieren im Bereich
-von Sekunden. **Echtzeit ist kein Problem**, die Reserve deckt auch mehrere Inferenzen pro
-Messung ab (Ensemble über verschiedene Poisson-Seeds).
+Eine Inferenz mit T = 20 Schritten dauert etwa 0,4 ms, die 5-fache Monte-Carlo-Mittelung wie
+im Original etwa 2 ms plus Readout. Die MOX-Sensoren reagieren im Bereich von Sekunden.
+**Echtzeit ist kein Problem.** Die Reserve reicht auch für mehr Monte-Carlo-Durchläufe, wenn
+das die Konfidenz stabilisiert.
 
 ---
 
@@ -271,8 +315,8 @@ Kern und Ring sind gleich.
 
 | Phase | Inhalt | Ergebnis / Abnahme |
 |---|---|---|
-| **0 – Analyse** (1 Woche) | Modell laden, `inspect_model.py` ausführen, Norse-Code lesen (τ, Schwelle, dt, T, Encoding, Readout-Art), Lizenz prüfen | Tabelle der echten Parameter, Speicherbudget bestätigt |
-| **1 – Referenz** (2 Wochen) | Fixpunkt-Referenzmodell in numpy, Vergleich mit Norse-Float auf dem Originaldatensatz | Genauigkeitsverlust durch INT8/Shift-Leak < 2 % |
+| **0 – Analyse** (wenige Tage) | `inspect_model.py` ausführen, die 5 offenen Punkte aus Abschnitt 0 in `modeling_snn.py` klären, `connectome_meta.json` lesen, Lizenz prüfen | Parameter vollständig, Speicherbudget bestätigt |
+| **1 – Referenz** (2 Wochen) | Fixpunkt-Referenzmodell in numpy, Vergleich mit dem Norse-Float-Modell auf DoOR (gleiche 5-fold-Splits, 5× Monte-Carlo) | Genauigkeitsverlust durch INT8/INT16 < 2 Prozentpunkte |
 | **2 – Ein Board** (3 Wochen) | `lif_core` + `syn_engine` für 100 Neuronen, Verilator-Vergleich, dann auf ein Tang Nano 20K; Spikes per UART auslesen | Bitgenaue Spikes gegenüber Referenz |
 | **3 – Ring** (3 Wochen) | `ring_node`, Backplane-Prototyp mit 3 Boards, dann 10; Fehlerzähler (CRC), Langzeittest | > 10⁹ Frames ohne CRC-Fehler; volle 800-Neuronen-Inferenz bitgenau |
 | **4 – Sensorik** (parallel, 3 Wochen) | Sensorkopf, MCU-Firmware (Wio Terminal aus diesem Repo erweitern), Datensatz aufnehmen | Datensatz ≥ 6 Klassen, mehrere Tage |
@@ -283,11 +327,13 @@ Kern und Ring sind gleich.
 ```bash
 pip install huggingface_hub numpy
 huggingface-cli download Vick-MIRE/flywire-olfactory-snn --local-dir flywire-snn
-python3 snn-fpga/tools/inspect_model.py flywire-snn/<gewichte>.safetensors \
+python3 snn-fpga/tools/inspect_model.py flywire-snn/model.safetensors \
         flywire-snn/connectome_mask.npz --boards 8 --wbits 8
+cat flywire-snn/config.json flywire-snn/connectome_meta.json
 ```
-Das Skript gibt Tensorformen, INT8-Quantisierungsfehler, Dichte und Fan-in/-out der Maske
-und den BSRAM-Bedarf pro Board aus. Damit lassen sich die Schätzungen oben bestätigen oder
+Das Skript gibt Tensorformen, INT8-Quantisierungsfehler, Dichte und Fan-in/-out der Maske,
+das Verhältnis erregender zu hemmender Synapsen, die Dale-Konformität und den BSRAM-Bedarf pro
+Board aus. Damit lassen sich die Schätzungen oben bestätigen oder
 korrigieren. Liegt ein Board über ≈ 700 Kbit, wandert `w_out` ins eingebettete SDRAM, oder
 die Klassenzahl wird verkleinert.
 
@@ -301,5 +347,6 @@ die Klassenzahl wird verkleinert.
 | Sensordrift / Temperatur / Feuchte | Baseline-Tracking auf der MCU, T/rH als Eingänge, Daten über viele Tage |
 | Luftströmung durch Gang und Lüfter | Ansaugung mit konstantem Volumenstrom, Sensorkopf vorn unten, Klassifikation beim Laufen separat validieren |
 | Signalintegrität im Ring | Backplane statt Kabel, moderater Takt (25 MHz), CRC und Fehlerzähler, Takt-Neuabgleich je Frame |
-| Unklare Norse-Details (Reset-Art, Readout, Encoding) | Phase 0/1: bitgenaue Referenz vor jeder HDL-Zeile |
-| Lizenz der Modellgewichte / FlyWire-Daten | Lizenz im Modell-Repository und die FlyWire-Nutzungsbedingungen vor einer Veröffentlichung prüfen |
+| Unklare Details in `modeling_snn.py` (LIF-Parameter, Betragsfunktion, Eingangsnormierung) | Phase 0/1: bitgenaue Referenz vor jeder HDL-Zeile |
+| Lizenz | Die Model Card nennt nur die Datenlizenzen: DoOR ist **CC BY-SA 4.0** (Share-Alike; ob das auf trainierte Gewichte durchschlägt, ist rechtlich offen). Für FlyWire gelten eigene Nutzungsbedingungen. Für den Eigengebrauch unkritisch; vor einer Veröffentlichung abgeleiteter Gewichte die Lizenz des Modell-Repos klären und Münch & Galizia (2016) sowie Dorkenwald et al. (2024) zitieren |
+| Domänenlücke DoOR → Gassensoren | Die Fliegenrezeptoren sind hochselektiv, MOX-Sensoren breitbandig. Der Adapter muss diese Lücke schließen. Ehrliche Erwartung: Das Konnektom wirkt als strukturierter Merkmalsraum, nicht als fertiger „Fliegengeruchssinn“. Die Kontrolle mit einem Zufallsnetz (erste Zeile) zeigt den tatsächlichen Nutzen |

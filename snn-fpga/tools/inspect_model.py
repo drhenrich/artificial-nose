@@ -85,14 +85,24 @@ def main():
             line += f"  rel. INT{args.wbits}-Fehler {err:.3%}"
         print(line)
 
-    mask = load_mask(args.mask) != 0
+    raw = load_mask(args.mask)
+    mask = raw != 0
     n = mask.shape[0]
     nnz = int(mask.sum())
     print(f"\n== Konnektom-Maske == {mask.shape}, nnz={nnz}, Dichte={nnz / mask.size:.2%}")
-    # Konvention pruefen: mask[post, pre] (nn.Linear) oder mask[pre, post]
+    # Modell rechnet spk @ W.T, also W[post, pre]: Spalten = praesynaptisch
     fan_out, fan_in = mask.sum(axis=0), mask.sum(axis=1)
-    print(f"Spaltensumme  min/mean/max: {fan_out.min()}/{fan_out.mean():.1f}/{fan_out.max()}")
-    print(f"Zeilensumme   min/mean/max: {fan_in.min()}/{fan_in.mean():.1f}/{fan_in.max()}")
+    print(f"Fan-out (Spalten) min/mean/max: {fan_out.min()}/{fan_out.mean():.1f}/{fan_out.max()}")
+    print(f"Fan-in  (Zeilen)  min/mean/max: {fan_in.min()}/{fan_in.mean():.1f}/{fan_in.max()}")
+
+    exc, inh = int((raw > 0).sum()), int((raw < 0).sum())
+    if inh:
+        print(f"Vorzeichen: {exc} erregend, {inh} hemmend ({inh / nnz:.1%})")
+        mixed = sum(1 for j in range(n) if (raw[:, j] > 0).any() and (raw[:, j] < 0).any())
+        print(f"Dale-Prinzip: {n - mixed}/{n} praesyn. Neuronen mit einheitlichem Vorzeichen"
+              + (" -> Vorzeichen pro Neuron speichern" if mixed == 0 else " -> Vorzeichen pro Synapse speichern"))
+    else:
+        print("Keine negativen Eintraege: Vorzeichen liegen nicht in der Maske, Datei-Schluessel pruefen")
 
     b = args.boards
     per = -(-n // b)
