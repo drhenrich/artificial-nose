@@ -69,13 +69,19 @@ class QParams:
     frac: int = FRAC   # Nachkommabits von v und i (int16)
 
 
-def quantize(p, runs, bits=8, frac=FRAC):
-    s_in, s_rec, s_out = (pow2_frac(p[k], bits) for k in ("w_in", "w_rec", "w_out"))
+# Standard-Gewichtsbreiten fuer Variante E: w_in und w_rec 9 Bit (fuellen die 9-Bit-Felder der
+# 18-Bit-BSRAM-Woerter), w_out 8 Bit (Bytes im SDRAM)
+BITS_IN, BITS_REC, BITS_OUT = 9, 9, 8
+
+
+def quantize(p, runs, frac=FRAC, bits_in=BITS_IN, bits_rec=BITS_REC, bits_out=BITS_OUT):
+    s_in, s_rec, s_out = (pow2_frac(p[k], b) for k, b in
+                          (("w_in", bits_in), ("w_rec", bits_rec), ("w_out", bits_out)))
     # Readout: logit = (counts @ w_out_q.T) * 2^-s_out / (T*runs) + b
     #   -> b in derselben Integer-Skala: b_q = b * 2^s_out * T * runs
     b_q = np.round(p["b_out"].astype(np.float64) * 2.0 ** s_out * T_STEPS * runs).astype(np.int64)
-    return QParams(quant(p["w_in"], s_in, bits), quant(p["w_rec"], s_rec, bits),
-                   quant(p["w_out"], s_out, bits), b_q, s_in, s_rec, s_out, runs, frac)
+    return QParams(quant(p["w_in"], s_in, bits_in), quant(p["w_rec"], s_rec, bits_rec),
+                   quant(p["w_out"], s_out, bits_out), b_q, s_in, s_rec, s_out, runs, frac)
 
 
 # ---------------------------------------------------------------- Eingang
@@ -220,11 +226,17 @@ def main():
     ap.add_argument("--runs", type=int, default=5, help="Monte-Carlo-Laeufe pro Probe")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--frac", type=int, default=FRAC, help="Nachkommabits von v/i (7 = Q8.7)")
+    ap.add_argument("--bits-in", type=int, default=BITS_IN)
+    ap.add_argument("--bits-rec", type=int, default=BITS_REC)
+    ap.add_argument("--bits-out", type=int, default=BITS_OUT)
     ap.add_argument("--dump", help="Testvektoren fuer die HDL-Simulation als npz schreiben")
     args = ap.parse_args()
 
     p = load_params(args.weights, args.mask)
-    q = quantize(p, args.runs, frac=args.frac)
+    q = quantize(p, args.runs, args.frac, args.bits_in, args.bits_rec, args.bits_out)
+    lost = int(((p["w_rec"] != 0) & (q.w_rec == 0)).sum())
+    print(f"Gewichte: w_in {args.bits_in} Bit, w_rec {args.bits_rec} Bit, w_out {args.bits_out} Bit; "
+          f"Synapsen auf 0 gerundet: {lost} von {int((p['w_rec'] != 0).sum())}")
     print(f"Skalen: w_in 2^-{q.s_in}, w_rec 2^-{q.s_rec}, w_out 2^-{q.s_out} | "
           f"Shifts in Q{15 - q.frac}.{q.frac}: Eingang {q.s_in + R_FRAC - q.frac}, rekurrent {q.s_rec - q.frac}")
 

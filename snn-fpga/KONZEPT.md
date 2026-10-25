@@ -359,7 +359,7 @@ openFPGALoader -b tangnano20k  (10 Boards über USB-Hub, per Seriennummer adress
 | B – Stereo-Riechen | 2 Sensorköpfe links/rechts, 2 Netzinstanzen à 4 Boards (200 Neuronen/Board), B0 und B9 gemeinsam | Fliegen vergleichen beide Antennen und erkennen so die Richtung. Das Links/Rechts-Signal steuert direkt die Drehrate |
 | C – Redundanz | 3 Instanzen à 3 Boards + 1 Voter | Mehrheitsentscheid gegen Störungen (Vibration, EMV), Ensemble über verschiedene Seeds |
 | D – Größeres Konnektom | alle 10 Boards als Neuronen-Boards, bis ~3.000 Neuronen mit SDRAM | Wenn später ein größerer FlyWire-Ausschnitt (z. B. alle ≈ 2.000 Kenyonzellen) genutzt werden soll |
-| **E – Ein Board (empfohlen)** | alle 800 Neuronen auf einem Board, 36 von 46 BSRAM-Blöcken (echtes Modell, INT8), `w_out` im eingebetteten SDRAM. **Ausgearbeitet in [VARIANTE-E.md](VARIANTE-E.md)** | Kein Ring, keine Synchronisation. ≈ 24 ms pro Klassifikation (≈ 40/s), weit schneller als die Sensoren |
+| **E – Ein Board (empfohlen)** | alle 800 Neuronen auf einem Board, 38 von 46 BSRAM-Blöcken (echtes Modell, 9-Bit-Gewichte), **Verilog fertig und verifiziert**, `w_out` im eingebetteten SDRAM. **Ausgearbeitet in [VARIANTE-E.md](VARIANTE-E.md)** | Kein Ring, keine Synchronisation. Gemessen 112 ms pro Klassifikation bei 27 MHz (≈ 20 ms nach Optimierung), schneller als die Sensoren |
 | **F – E-Cluster** | bis zu 10 unabhängige Kopien von E an einem SPI-Bus | Parallele Monte-Carlo-Läufe (≈ 5 ms), Stereo oder Redundanz, ohne Ring |
 
 **Empfehlung (aktualisiert):** Mit den echten Modelldaten (2,34 % Dichte) ist **E** die
