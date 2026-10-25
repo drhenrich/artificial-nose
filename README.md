@@ -17,7 +17,19 @@ I am sharing in this repository all the instructions, source code, bill of mater
 * 💰 [Bill of materials](./bom/README.md) ;
 * ⚡ [Schematics & Wiring diagram](./schematics/README.md) ;
 * 👩‍💻 [Firmware source code](./firmware) ;
-* 🧊 [3D enclosure model files](./enclosure/README.md).
+* 🧊 [3D enclosure model files](./enclosure/README.md) ;
+* 🪰 [FlyWire olfactory SNN on a Tang Nano 20K FPGA](./snn-fpga/README.md) (German).
+
+## 🪰 FlyWire-SNN auf FPGA (Erweiterung)
+
+Dieser Fork erweitert die künstliche Nase um ein biologisch beschränktes Spiking Neural Network.
+Das Modell [`Vick-MIRE/flywire-olfactory-snn`](https://huggingface.co/Vick-MIRE/flywire-olfactory-snn)
+hat 800 LIF-Neuronen, deren Verschaltung aus dem FlyWire-Konnektom der Fruchtfliege stammt.
+Es läuft bitgenau auf einem Tang Nano 20K (Gowin GW2AR-18) und ist für den Einsatz auf einem
+DeepRobotics Lite3 gedacht.
+
+- **Stand:** Verilog-Kern auf dem Board bestätigt, alle Spikezähler in 10 von 10 Proben bitgenau wie das Python-Referenzmodell
+- **Einstieg:** [snn-fpga/README.md](./snn-fpga/README.md), Konzept in [snn-fpga/KONZEPT.md](./snn-fpga/KONZEPT.md), Hardware in [snn-fpga/VARIANTE-E.md](./snn-fpga/VARIANTE-E.md)
 
 ## Author <!-- omit in toc -->
 
