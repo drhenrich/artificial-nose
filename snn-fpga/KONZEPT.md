@@ -230,6 +230,27 @@ Zählern. `count` braucht 7 Bit (0–100 bei 5 Monte-Carlo-Durchläufen; weil de
 bei 25 MHz), jedes Board addiert seinen Anteil im Durchlauf. Bei eigenen 10 Klassen ist beides
 vernachlässigbar.
 
+### 4.5 Fixpunkt-Spezifikation (Referenz: [`tools/snn_ref.py`](tools/snn_ref.py))
+
+`fixed_forward()` in `snn_ref.py` ist die verbindliche Spezifikation für die HDL. Jede Zeile dort
+entspricht einer Hardware-Operation:
+
+| Größe | Format | Bemerkung |
+|---|---|---|
+| `v`, `i_syn` | int16, Q5.10 (1,0 = 1024), Sättigung | `V_TH` = 1024, Reset auf 0 |
+| Rate `r` | Q0.8, 0…256 (256 = 1,0) | MCU liefert Min-Max-normierte Werte |
+| Eingangsspike | `xorshift32`, `e = (x[31:24] < r)` | Pro Inferenz ein Generator, Reihenfolge Lauf → Schritt → Kanal, Seed pro Lauf `seed + m·0x9E3779B9` |
+| `W_in`, `W_rec`, `W_out` | int8 mit Zweierpotenz-Skala `2^-s` pro Tensor | Skala aus `max|w|` |
+| Akkumulatoren | `acc_in = Σ e·r·W_in`, `acc_rec = Σ spk·W_rec` | Getrennt, danach je ein Rundungs-Shift nach Q5.10 (Halbe aufwärts) |
+| Leak | `(K·x + 2^15) >> 16`, K_MEM = 6554, K_SYN = 13107 | 0,1 und 0,2 in Q0.16 |
+| Readout | `counts · W_out_q + b_q` (int32) | `b_q = b · 2^s_out · 20 · M`, Argmax direkt auf den Integern |
+
+`snn_ref.py` gibt die beobachteten Maximalwerte der Akkumulatoren aus, daraus folgen die
+Bitbreiten im RTL. Mit `--dump` schreibt es Testvektoren (Raten, Eingangsspikes, Spikes pro
+Schritt, Zähler, Logits, quantisierte Gewichte) für die Verilator-Testbench.
+`verify_torch.py` prüft, dass das Float-Modell in `snn_ref.py` das Original (`modeling_snn.py`
++ Norse) exakt nachbildet.
+
 ---
 
 ## 5. Inter-FPGA-Kommunikation: Spike-Vektor-Ring
@@ -331,7 +352,7 @@ Kern und Ring sind gleich.
 | Phase | Inhalt | Ergebnis / Abnahme |
 |---|---|---|
 | **0 – Analyse** (wenige Tage) | `inspect_model.py` auf die echten Dateien, `connectome_meta.json` lesen, Lizenz prüfen (Modellcode ist bereits ausgewertet) | Speicherbudget, Gewichtsbereiche und Vorzeichen-Statistik bestätigt |
-| **1 – Referenz** (2 Wochen) | Fixpunkt-Referenzmodell in numpy, Vergleich mit dem Norse-Float-Modell auf DoOR (gleiche 5-fold-Splits, 5× Monte-Carlo) | Genauigkeitsverlust durch INT8/INT16 < 2 Prozentpunkte |
+| **1 – Referenz** (2 Wochen) | Fixpunkt-Referenzmodell in numpy (`snn_ref.py`, erledigt; mit echten Gewichten laufen lassen), Vergleich mit dem Norse-Float-Modell auf DoOR (gleiche 5-fold-Splits, 5× Monte-Carlo) | Genauigkeitsverlust durch INT8/INT16 < 2 Prozentpunkte |
 | **2 – Ein Board** (3 Wochen) | `lif_core` + `syn_engine` für 100 Neuronen, Verilator-Vergleich, dann auf ein Tang Nano 20K; Spikes per UART auslesen | Bitgenaue Spikes gegenüber Referenz |
 | **3 – Ring** (3 Wochen) | `ring_node`, Backplane-Prototyp mit 3 Boards, dann 10; Fehlerzähler (CRC), Langzeittest | > 10⁹ Frames ohne CRC-Fehler; volle 800-Neuronen-Inferenz bitgenau |
 | **4 – Sensorik** (parallel, 3 Wochen) | Sensorkopf, MCU-Firmware (Wio Terminal aus diesem Repo erweitern), Datensatz aufnehmen | Datensatz ≥ 6 Klassen, mehrere Tage |
