@@ -34,13 +34,24 @@ MASK32 = 0xFFFFFFFF
 
 # ---------------------------------------------------------------- Parameter
 
+def flush_denormals(w):
+    """Subnormale float32-Werte (|w| < 1e-30, im trainierten Modell ~1e-42) auf 0 setzen.
+
+    Sie tragen nichts bei (werden ohnehin zu 0 quantisiert), loesen aber auf macOS mit
+    numpy 2 + Accelerate Fehlalarme ("divide by zero/overflow in matmul") aus.
+    """
+    w = np.asarray(w, dtype=np.float32).copy()
+    w[np.abs(w) < 1e-30] = 0.0
+    return w
+
+
 def load_params(weights_path, mask_path):
     t = load_safetensors(weights_path)
     adj = load_mask(mask_path).astype(np.float32)
     mask, sign = (adj != 0).astype(np.float32), np.sign(adj).astype(np.float32)
     return {
         "w_in": t["input_proj.weight"].astype(np.float32),                 # (H, 52)
-        "w_rec": (t["recurrent"] * mask * sign).astype(np.float32),        # (H, H), [post, pre]
+        "w_rec": flush_denormals(t["recurrent"] * mask * sign),             # (H, H), [post, pre]
         "w_out": t["readout.weight"].astype(np.float32),                   # (K, H)
         "b_out": t["readout.bias"].astype(np.float32),                     # (K,)
     }
@@ -127,6 +138,14 @@ def bernoulli_lfsr(r_q, runs, seed):
 
 def float_forward(p, x, e):
     """Bildet modeling_snn.py nach; e ersetzt torch.bernoulli. Rueckgabe: Logits (B, K), Spikes."""
+    with np.errstate(all="ignore"):     # Fehlalarme von BLAS-Bibliotheken; Ergebnis wird unten geprueft
+        logits, spikes = _float_forward(p, x, e)
+    if not np.isfinite(logits).all():
+        raise FloatingPointError("float_forward: nicht-endliche Logits")
+    return logits, spikes
+
+
+def _float_forward(p, x, e):
     r = rate_encode(x)
     runs, steps, b, _ = e.shape
     h = p["w_rec"].shape[0]
