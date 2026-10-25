@@ -5,8 +5,9 @@ Das veröffentlichte Modell (800 Neuronen, 14.998 Synapsen, 692 Klassen) passt v
 (541 KiB) im eingebetteten 64-Mbit-SDRAM.
 
 **Stand:** Verilog-Kern fertig und bitgenau gegen `snn_ref.py` verifiziert (Verilator, 20 Proben,
-2.000 Zeitschritte, alle Spikes und 13.840 Logits identisch). Bring-up-Bitstream für den Tang Nano
-20K gebaut (Open-Source-Toolchain, Timing erfüllt). Readout über SDRAM in der Simulation
+2.000 Zeitschritte, alle Spikes und 13.840 Logits identisch). **Auf dem Tang Nano 20K bestätigt
+(25.10.2026):** `board_test.py` mit 10 Proben, alle 8.000 Spikezähler bitgenau wie `snn_ref.py`,
+187 ms pro Probe inklusive UART (macOS, Port `/dev/cu.usbserial-…1`). Readout über SDRAM in der Simulation
 verifiziert, SDRAM-Controller fehlt noch: Beim Bring-up rechnet der PC den Readout.
 
 | Datei | Inhalt |
@@ -128,7 +129,7 @@ python3 snn-fpga/tools/board_test.py model.safetensors connectome_mask.npz --por
 ```
 
 Erwartet: `10 von 10 Proben bitgenau wie snn_ref.py`, etwa 180 ms pro Probe. Davon entfallen
-112 ms aufs Rechnen und 70 ms auf die UART mit 115.200 Baud.
+112 ms aufs Rechnen und 70 ms auf die UART mit 115.200 Baud. Gemessen: 10/10, 187 ms.
 
 **LEDs** (aktiv low): LED0 leuchtet beim Rechnen, LED1 blinkt als Herzschlag (zeigt, dass der Bitstream
 läuft), LED2 wechselt bei jedem empfangenen Frame, LED3 bei jeder gesendeten Antwort.
@@ -140,7 +141,7 @@ Sipeed-Beispielen; bei abweichender Board-Revision `rtl/tangnano20k.cst` anpasse
 
 ## 8. Nächste Schritte
 
-1. Bring-up auf dem Board bestätigen (`board_test.py`)
+1. ~~Bring-up auf dem Board bestätigen~~ erledigt: 10/10 Proben bitgenau
 2. SDRAM-Controller für das eingebettete SDRAM (GW2AR: 64 Mbit, 32 Bit breit) und Laden von `w_out` per UART oder aus dem SPI-Flash. Dann läuft der Readout auf dem FPGA (`READOUT = 1`, in der Simulation bereits verifiziert)
 3. Geschwindigkeit (Abschnitt 5) und UART-Protokoll für die Sensor-MCU
 
