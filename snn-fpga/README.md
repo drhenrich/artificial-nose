@@ -22,6 +22,7 @@ Kenyonzellen.
 
 Details zu Variante E, Speicherplan, Zeitbudget und Inbetriebnahme: [VARIANTE-E.md](VARIANTE-E.md).
 Eigene Gerüche aufnehmen, neu trainieren und live erkennen: [SENSORIK.md](SENSORIK.md).
+Publikationsentwurf (Englisch): [PUBLICATION.md](PUBLICATION.md).
 
 ## Schnellstart
 
