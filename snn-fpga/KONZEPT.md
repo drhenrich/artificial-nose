@@ -23,21 +23,23 @@ x (52 DoOR-Rezeptorwerte, standardisiert)
            + W_eff · spk_{t-1}                  W_eff = recurrent ⊙ mask ⊙ sign
      spk_t = LIFCell(I_t)
   → rate = Σ spk_t / 20
-  → Linear(800 → 500, mit Bias)                 = Logits
+  → Linear(800 → 692, mit Bias)                 = Logits
 ```
 
 | Merkmal | Wert | Folge für die Hardware |
 |---|---|---|
-| Hidden-Neuronen | 800 (Projektionsneuronen des Antennallobus + Kenyonzellen des Pilzkörpers) | Kenyonzellen feuern biologisch sehr spärlich, das passt gut zur ereignisgetriebenen Verarbeitung |
-| Zeitschritte | **20** | Eine Inferenz dauert ≈ 0,6 ms (Abschnitt 5) |
+| Hidden-Neuronen | 800 (Projektionsneuronen des Antennallobus + Kenyonzellen des Pilzkörpers, FlyWire-IDs in `connectome_meta.json`) | Kenyonzellen feuern biologisch sehr spärlich, das passt gut zur ereignisgetriebenen Verarbeitung |
+| Synapsen | **14.998** gerichtete Kanten → Dichte **2,34 %**, im Mittel 18,7 Ein- und Ausgänge pro Neuron | Die ganze rekurrente Schicht braucht nur ≈ 260 Kbit (INT8 + 7-Bit-Index + Zeigertabelle) und passt sogar auf ein einzelnes Board |
+| Zeitschritte | **20** | Eine Inferenz dauert ≈ 0,5 ms (Abschnitt 5) |
 | Neuronenmodell | Norse `LIFCell`, nur `method="super"` und α = 100 gesetzt, sonst **Norse-Standardwerte**: `tau_mem_inv=100`, `tau_syn_inv=200`, `v_leak=0`, `v_th=1`, `v_reset=0`, `dt=1 ms`, Startzustand v = i = 0 | Feste Konstanten K_MEM = 0,1, K_SYN = 0,2. Surrogate und α wirken nur im Training, in der Inferenz gilt die harte Schwelle `v > 1` |
 | Rekurrente Gewichte | `recurrent ⊙ mask ⊙ sign`. `recurrent` ist ein freier Parameter **ohne `abs()`**, initialisiert symmetrisch um 0 (Kaiming) | Die Model Card sagt „nur die Beträge sind gelernt“, der Code erzwingt das aber nicht. Effektive Vorzeichen können gegen das Konnektom kippen. Biologisch fixiert ist also sicher nur die **Topologie**. Hardware: effektive Gewichte offline berechnen und **vorzeichenbehaftet pro Synapse** speichern (INT8). Das Skript misst, wie viele Vorzeichen gekippt sind |
 | Konvention | `spk_prev @ W_effᵀ` → `W_eff[post, pre]` | Zeilen = Ziel, Spalten = Quelle. Die CSR-Liste wird nach Spalten (präsynaptisch) sortiert |
 | Eingang | Pro Messung Min-Max auf [0, 1]; Projektion von `bernoulli(r) * r` | Der stärkste Kanal ist immer 1, der schwächste immer 0. **Absolute Konzentration geht verloren** (Folgen in 3.2 und 7.2). Eingangsstrom = `W_in[i,k] · r_k` pro Eingangsspike, also Multiplikationen |
 | Erster Zeitschritt | Eingang landet erst am Ende eines Schritts im Synapsenstrom | In Schritt 1 kann kein Neuron feuern, effektiv tragen 19 Schritte Information |
-| Readout | `spikes_acc / 20` → `Linear(800 → 500)` **mit Bias** | Die Hardware zählt Spikes (5 Bit). Der Faktor 1/20 wird in `W_out` eingerechnet, den Bias addiert B9 |
-| Auswertung | 5× Monte-Carlo-Mittel über die Poisson-Kodierung | Auf dem FPGA 5 Durchläufe mit verschiedenen LFSR-Seeds und die Logits summieren (≈ 3 ms) |
-| Daten | DoOR 2.0 (CC BY-SA 4.0), 500 Odorant-Klassen | Siehe Lizenz-Risiko in Abschnitt 10 |
+| Readout | `spikes_acc / 20` → `Linear(800 → 692)` **mit Bias** | Die Hardware zählt Spikes (5 Bit). Der Faktor 1/20 wird in `W_out` eingerechnet, den Bias addiert B9 |
+| Auswertung | 5× Monte-Carlo-Mittel über die Poisson-Kodierung | Auf dem FPGA 5 Durchläufe mit verschiedenen LFSR-Seeds und die Spikezähler summieren, Readout nur einmal (≈ 3 ms gesamt) |
+| Daten | DoOR 2.0 (CC BY-SA 4.0), **692 Odorant-Klassen** (laut `config.json`, die Model Card nennt veraltet 500) | Siehe Lizenz-Risiko in Abschnitt 10 |
+| Genauigkeit | Test 47,6 %, Validierung 47,7 % (Checkpoint fold 0, seed 1010, Abbruch nach Epoche 28). Zufall wäre 0,14 % | Referenzwert für Phase 1: Die Fixpunkt-Version soll auf demselben Split ≤ 2 Prozentpunkte darunter liegen |
 
 ---
 
@@ -49,14 +51,16 @@ Spike-Kommunikation), unterschätzt aber den Chip und setzt den Engpass an die f
 | Punkt | KI-Antwort | Richtig |
 |---|---|---|
 | Speicher GW2AR-18 | „~828 Kb BRAM“ | 828 Kbit BSRAM (46 × 18 Kbit) **plus 64 Mbit SDRAM im selben Gehäuse** (GW2AR = mit eingebettetem SDRAM) |
-| Engpass | rekurrente 800×800-Matrix | Die **Readout-Schicht** 800×500 (≈3,2 Mbit bei INT8) ist der größte Block. Die rekurrente Matrix ist bei ~5–15 % Dichte nur ~0,3–1 Mbit (echte Dichte steht in `connectome_meta.json`) |
+| Engpass | rekurrente 800×800-Matrix | Die **Readout-Schicht** 800×692 (≈ 4,4 Mbit bei INT8) ist mit Abstand der größte Block. Die rekurrente Matrix hat nur 14.998 Synapsen (2,34 %) und braucht ≈ 260 Kbit |
 | Rechenleistung | Cluster nötig, weil ein Chip zu klein ist | Rechnerisch reichen 1–3 Boards. Das Netz ist ereignisgetrieben, ein Zeitschritt kostet einige tausend Additionen |
 | Partitionierung mit METIS | Kanten zwischen FPGAs minimieren | Mit einem **Spike-Vektor-Broadcast** (Abschnitt 4) bekommt jedes Board ohnehin alle 800 Spikes. Wie viele Kanten Boardgrenzen kreuzen, spielt dann keine Rolle; METIS ist unnötig |
 | Eingang | 52 Kanäle direkt einspeisen | Die 52 Eingänge sind die **DoOR-Antworten von Fliegen-Duftrezeptoren** (Or/Ir-Gene). **Kein technischer Gassensor liefert diese Signale.** Eine Adapterschicht muss neu trainiert werden (Abschnitt 3) |
-| Ausgang | 500 Klassen | Die 500 Klassen sind DoOR-Odorants. Das Netz wurde auf Rezeptorprofile trainiert, nicht auf Sensordaten. Die Readout-Schicht wird für eigene Klassen neu trainiert |
+| Ausgang | 500 Klassen | Es sind tatsächlich 692 DoOR-Odorants. Das Netz wurde auf Rezeptorprofile trainiert, nicht auf Sensordaten. Die Readout-Schicht wird für eigene Klassen neu trainiert |
 
 **Konsequenz:** Der Cluster ist sinnvoll, aber aus anderen Gründen als in der KI-Antwort.
-Er verteilt den Speicher, sodass alles im BSRAM bleibt und kein SDRAM-Controller nötig ist.
+Rein technisch läuft das Originalmodell auch auf **einem** Board (Variante E, Abschnitt 8), dann
+mit der Readout-Schicht im eingebetteten SDRAM. Der Cluster verteilt den Speicher, sodass alles
+im BSRAM bleibt und kein SDRAM-Controller nötig ist.
 Er gibt Reserve für größere Konnektom-Ausschnitte und ermöglicht Varianten wie Stereo-Riechen
 oder Redundanz (Abschnitt 8).
 
@@ -157,10 +161,10 @@ verschiedenen Tagen, wegen Sensordrift, Temperatur und Feuchte.
 
 ### 4.2 Rollenverteilung
 
-| Board | Aufgabe | Speicher (Schätzung, INT8, 8 % Dichte) |
+| Board | Aufgabe | Speicher (INT8, 2,34 % Dichte, K = 692) |
 |---|---|---|
 | **B0** | UART zur MCU, Eingangspuffer `r[52]`, Bernoulli-Encoder (LFSR), Takt- und Zeitschritt-Master, Ring-Master | < 50 Kbit |
-| **B1–B8** | je 100 LIF-Neuronen: Eingangsstrom `W_in·(e⊙r)`, rekurrente Synapsen, Membrandynamik, Spike-Zähler, Teilsummen der Readout-Schicht | ≈ 540 Kbit (siehe Skriptausgabe) |
+| **B1–B8** | je 100 LIF-Neuronen: Eingangsstrom `W_in·(e⊙r)`, rekurrente Synapsen, Membrandynamik, Spike-Zähler, Teilsummen der Readout-Schicht | ≈ 625 Kbit von 828: rekurrent ≈ 40, `w_in` ≈ 41, `w_out` ≈ 541 |
 | **B9** | Sammelt die Readout-Teilsummen, Bias, Argmax/Softmax-Näherung, Konfidenz, UART/USB zum Roboter, Debug-Spike-Monitor | < 50 Kbit |
 
 800 / 8 = 100 Neuronen pro Board ergibt glatte Adressen (7-Bit-Index). B0 und B9 als reine
@@ -216,12 +220,15 @@ W_out' = W_out / 20      (Mittelwert über 20 Schritte, offline eingerechnet; Bi
 ```
 
 Die Teilsummen laufen über den Ring nach B9 und werden dort addiert. Damit braucht kein Board
-die ganze 800×K-Matrix. Bei K = 500 sind das ≈ 390 Kbit pro Board und passen noch ins BSRAM.
+die ganze 800×K-Matrix. Bei K = 692 sind das ≈ 541 Kbit pro Board (≈ 31 der 46 BSRAM-Blöcke).
+Das passt, lässt aber wenig Reserve.
 Bei K ≈ 10 eigenen Klassen ist die Readout-Schicht vernachlässigbar.
 
 Laut Model Card liest das Modell auf zeitgemittelten Spikeraten aus, genau passend zu den
-Zählern. `count` braucht nur 5 Bit (0–20). Die 100·K MACs laufen bei K = 500 in ≈ 1 ms und
-bei eigenen 10 Klassen in ≈ 20 µs.
+Zählern. `count` braucht 7 Bit (0–100 bei 5 Monte-Carlo-Durchläufen; weil der Readout linear ist, ist die Summe der Zähler exakt gleichwertig zum Mittel der Logits, mit `W_out' = W_out / 100`). Die 100·692 MACs laufen mit 4 Multiplizierern bei
+54 MHz in ≈ 0,3 ms. Die 692 Teilsummen à 24 Bit brauchen einen Ringumlauf (≈ 4.150 Takte, 0,17 ms
+bei 25 MHz), jedes Board addiert seinen Anteil im Durchlauf. Bei eigenen 10 Klassen ist beides
+vernachlässigbar.
 
 ---
 
@@ -247,12 +254,12 @@ Frame (TDM, 4-Bit-Bus):  SYNC | t[16] | CMD[8] | e[52] | s[800] | CRC8
 |---|---|---|
 | Ring-Frame | ≈ 250 | 5 µs |
 | Eingang: ≈ 26 aktive Kanäle × 100 Neuronen, 4 MAC parallel | ≈ 650 | 12 µs |
-| Synapsen: 80 Spikes × ≈ 8 lokale Ziele | ≈ 650 | 12 µs |
+| Synapsen: 80 Spikes × ≈ 2,3 lokale Ziele (Fan-out 18,7 / 8 Boards) | ≈ 190 | 4 µs |
 | LIF-Update 100 Neuronen | 100 | 2 µs |
-| **Summe pro Zeitschritt** | | **≈ 30 µs → ~30.000 Schritte/s** |
+| **Summe pro Zeitschritt** | | **≈ 25 µs → ~40.000 Schritte/s** |
 
-Eine Inferenz mit T = 20 Schritten dauert etwa 0,6 ms, die 5-fache Monte-Carlo-Mittelung wie
-im Original etwa 3 ms plus Readout. Die MOX-Sensoren reagieren im Bereich von Sekunden.
+Eine Inferenz mit T = 20 Schritten dauert etwa 0,5 ms, die 5-fache Monte-Carlo-Mittelung wie
+im Original etwa 2,5 ms plus Readout (≈ 0,5 ms). Die MOX-Sensoren reagieren im Bereich von Sekunden.
 **Echtzeit ist kein Problem.** Die Reserve reicht auch für mehr Monte-Carlo-Durchläufe, wenn
 das die Konfidenz stabilisiert.
 
@@ -311,9 +318,10 @@ openFPGALoader -b tangnano20k  (10 Boards über USB-Hub, per Seriennummer adress
 | **A – Referenz (empfohlen)** | B0 IO, B1–B8 je 100 Neuronen, B9 Readout | Einfach, alles im BSRAM, identische Neuronen-Boards |
 | B – Stereo-Riechen | 2 Sensorköpfe links/rechts, 2 Netzinstanzen à 4 Boards (200 Neuronen/Board), B0 und B9 gemeinsam | Fliegen vergleichen beide Antennen und erkennen so die Richtung. Das Links/Rechts-Signal steuert direkt die Drehrate |
 | C – Redundanz | 3 Instanzen à 3 Boards + 1 Voter | Mehrheitsentscheid gegen Störungen (Vibration, EMV), Ensemble über verschiedene Seeds |
-| D – Größeres Konnektom | alle 10 Boards als Neuronen-Boards, bis ~3.000 Neuronen mit SDRAM | Wenn später ein größerer FlyWire-Ausschnitt (z. B. mit Pilzkörper-Kenyonzellen) genutzt werden soll |
+| D – Größeres Konnektom | alle 10 Boards als Neuronen-Boards, bis ~3.000 Neuronen mit SDRAM | Wenn später ein größerer FlyWire-Ausschnitt (z. B. alle ≈ 2.000 Kenyonzellen) genutzt werden soll |
+| E – Ein Board | alle 800 Neuronen auf einem Board (≈ 560 Kbit BSRAM für rekurrent + `w_in`), `w_out` 4,4 Mbit im eingebetteten SDRAM | Schnellster Weg zum ersten lauffähigen Gesamtmodell in Phase 2. Ein Zeitschritt dauert dann ≈ 8× länger (≈ 0,2 ms), immer noch weit schneller als die Sensoren |
 
-Start mit **A**. Ist A lauffähig, ist der Wechsel zu **B** reine Konfigurationssache, denn
+Phase 2 mit **E** (ein Board, volles Modell) beginnen, dann auf **A** verteilen. Ist A lauffähig, ist der Wechsel zu **B** reine Konfigurationssache, denn
 Kern und Ring sind gleich.
 
 ---
