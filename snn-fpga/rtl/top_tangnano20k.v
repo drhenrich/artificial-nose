@@ -48,7 +48,8 @@ module top_tangnano20k #(
         .start(start), .busy(busy), .done(done), .cls(), .cls_logit(),
         .wout_req(), .wout_addr(), .wout_valid(1'b0), .wout_data(32'd0),
         .step_valid(), .step_spikes(), .logit_valid(), .logit_idx(), .logit_data(),
-        .cnt_valid(cnt_valid), .cnt_idx(cnt_idx), .cnt_word(cnt_word));
+        .cnt_valid(cnt_valid), .cnt_idx(cnt_idx), .cnt_word(cnt_word),
+        .dbg_addr(8'd0), .dbg_word());
 
     // Zaehlerpuffer: 200 Woerter a 4 x 7 Bit
     reg [27:0] cbuf [0:199];

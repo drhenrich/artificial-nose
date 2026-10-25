@@ -66,6 +66,45 @@ def check_sdram(ser, words, n=8, seed=0):
     return errors == 0
 
 
+def set_latency(ser, lat):
+    ser.write(bytes([0xA5]) + b"L" + bytes([lat]))
+    resp = read_exact(ser, 3)
+    return resp[:2] == b"\x5aL" and resp[2] == lat
+
+
+def burst_ok(ser, words, start=230, n=200):
+    ser.write(bytes([0xA5]) + b"B" + struct.pack("<I", start)[:3] + struct.pack("<H", n))
+    resp = read_exact(ser, 2 + 4 * n)
+    return int((np.frombuffer(resp[2:], dtype="<u4") != words[start:start + n]).sum())
+
+
+def calibrate(ser, words, force=None):
+    """SDRAM-Leselatenz bestimmen: Burst wie beim Readout fuer Latenz 2..7 pruefen."""
+    if force:
+        set_latency(ser, force)
+        print(f"SDRAM-Leselatenz vorgegeben: {force}, Burst-Fehler {burst_ok(ser, words)}")
+        return force
+    good = []
+    for lat in range(2, 8):
+        set_latency(ser, lat)
+        bad = burst_ok(ser, words)
+        print(f"  Latenz {lat}: {bad} von 200 Burst-Woertern falsch")
+        if bad == 0:
+            good.append(lat)
+    if not good:
+        raise IOError("keine SDRAM-Leselatenz liefert korrekte Bursts")
+    lat = good[len(good) // 2]
+    set_latency(ser, lat)
+    print(f"SDRAM-Leselatenz: {lat} (korrekt: {good})")
+    return lat
+
+
+def read_counts(ser, h):
+    ser.write(bytes([0xA5]) + b"Z")
+    resp = read_exact(ser, 2 + h + 1)
+    return np.frombuffer(resp[2:2 + h], dtype=np.uint8).astype(np.int64)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("weights")
@@ -78,6 +117,7 @@ def main():
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--frac", type=int, default=snn_ref.FRAC)
     ap.add_argument("--skip-load", action="store_true", help="w_out ist schon im SDRAM")
+    ap.add_argument("--lat", type=int, help="SDRAM-Leselatenz vorgeben statt kalibrieren")
     ap.add_argument("--data", help="npz mit X (N x 52) und optional y (N,)")
     args = ap.parse_args()
     baud = args.baud or (1_000_000 if args.mode == "full" else 115_200)
@@ -104,6 +144,8 @@ def main():
             load_sdram(ser, words)
             if not check_sdram(ser, words):
                 return
+        if args.mode == "full":
+            calibrate(ser, w_out_words(q), args.lat)
         for b in range(len(x)):
             seed_b = (args.seed + b) & snn_ref.MASK32
             rates = b"".join(struct.pack("<H", int(v)) for v in r_q[b])
@@ -124,6 +166,10 @@ def main():
                 diff = int((logits != logits_ref[b]).sum())
                 good = diff == 0 and cls_hw == int(logits_ref[b].argmax())
                 what = f"{diff} Logits verschieden"
+                if not good:                   # eingrenzen: stimmen wenigstens die Spikezaehler?
+                    cdiff = int((read_counts(ser, q.w_in.shape[0]) != counts_ref[b]).sum())
+                    what += f", {cdiff} Spikezaehler verschieden" + (
+                        " -> Kern ok, Readout/SDRAM falsch" if cdiff == 0 else " -> Kern rechnet anders")
             else:
                 ser.write(bytes([0xA5]) + struct.pack("<I", seed_b) + rates)
                 resp = read_exact(ser, 802)

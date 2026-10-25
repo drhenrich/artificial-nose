@@ -38,7 +38,11 @@ module tb_top_full;
     reg [31:0] tv_seed   [0:N_TV-1];
     reg [31:0] tv_logits [0:N_TV*N_CLS-1];
     reg [15:0] tv_class  [0:N_TV-1];
+    reg [7:0]  tv_counts [0:N_TV*N_HID-1];
+    reg [31:0] wref      [0:N_CLS*N_WOUT-1];
     initial begin
+        $readmemh({MEM_DIR, "tv_counts.hex"}, tv_counts);
+        $readmemh({MEM_DIR, "w_out.hex"},     wref);
         $readmemh({MEM_DIR, "tv_r.hex"},      tv_r);
         $readmemh({MEM_DIR, "tv_seed.hex"},   tv_seed);
         $readmemh({MEM_DIR, "tv_logits.hex"}, tv_logits);
@@ -79,7 +83,7 @@ module tb_top_full;
         pat = a * 32'h01000193 ^ 32'hC0FFEE00;
     endfunction
 
-    integer i, b, errors = 0, t0;
+    integer i, b, errors = 0, t0, lat, bad, good_lat;
     reg [31:0] sum, cls_w;
     localparam [23:0] TADDR = 24'd200000;
     initial begin
@@ -107,6 +111,22 @@ module tb_top_full;
             end
         end
         $display("W/R: 64 Woerter geschrieben und zurueckgelesen, Fehler bisher %0d", errors);
+        // ---- L + B: Latenz durchprobieren, Burst ueber Zeilengrenze (Adresse 230..429)
+        good_lat = 0;
+        for (lat = 2; lat <= 5; lat = lat + 1) begin
+            send_byte(8'hA5); send_byte("L"); send_byte(lat);
+            recv_byte; recv_byte; recv_byte;
+            if (got !== lat) begin $display("L-Antwort %0d statt %0d", got, lat); errors = errors + 1; end
+            send_byte(8'hA5); send_byte("B");
+            send_byte(8'd230); send_byte(8'd0); send_byte(8'd0); send_byte(8'd200); send_byte(8'd0);
+            recv_byte; recv_byte;
+            bad = 0;
+            for (i = 0; i < 200; i = i + 1) begin recv_word; if (gw !== wref[230 + i]) bad = bad + 1; end
+            $display("Burst mit Latenz %0d: %0d von 200 Woertern falsch", lat, bad);
+            if (bad == 0) good_lat = lat;
+        end
+        if (good_lat != 3) begin $display("erwartet: nur Latenz 3 korrekt"); errors = errors + 1; end
+        send_byte(8'hA5); send_byte("L"); send_byte(8'd3); recv_byte; recv_byte; recv_byte;
         // ---- 2. Klassifizieren
         for (b = 0; b < N_CHECK; b = b + 1) begin
             send_byte(8'hA5); send_byte("C");
@@ -131,6 +151,17 @@ module tb_top_full;
             recv_word; if (gw !== sum) begin $display("C-Summe falsch"); errors = errors + 1; end
             if (cls_w[15:0] !== tv_class[b]) begin $display("Klasse %0d statt %0d", cls_w[15:0], tv_class[b]); errors = errors + 1; end
             $display("Probe %0d: Klasse %0d (erwartet %0d), %0d Logits geprueft", b, cls_w[15:0], tv_class[b], N_CLS);
+            // ---- Z: Spikezaehler dieser Probe
+            send_byte(8'hA5); send_byte("Z");
+            recv_byte; recv_byte;
+            bad = 0; sum = 0;
+            for (i = 0; i < N_HID; i = i + 1) begin
+                recv_byte; sum = sum + got;
+                if (got !== tv_counts[b*N_HID + i]) bad = bad + 1;
+            end
+            recv_byte; if (got !== sum[7:0]) bad = bad + 1;
+            if (bad != 0) begin $display("Z: %0d Zaehler falsch", bad); errors = errors + 1; end
+            else $display("Z: alle %0d Zaehler korrekt", N_HID);
         end
         $display("SDRAM-Modell: Protokollfehler %0d, groesster Refresh-Abstand %0d Takte", mem.errors, mem.max_ref_gap);
         if (errors == 0 && mem.errors == 0) $display("PASS"); else $display("FAIL (%0d Fehler)", errors + mem.errors);

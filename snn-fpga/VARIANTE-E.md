@@ -9,7 +9,7 @@ Das veröffentlichte Modell (800 Neuronen, 14.998 Synapsen, 692 Klassen) passt v
 | Version | Bitstream | Status |
 |---|---|---|
 | Bring-up (27 MHz, Zählerausgabe, Readout auf dem PC) | `snn_bringup.fs` (früher `snn_tangnano20k.fs`) | **Auf dem Board bestätigt (25.10.2026):** 10/10 Proben, alle 8.000 Spikezähler bitgenau, 187 ms pro Probe |
-| **Vollversion** (54 MHz, SDRAM-Readout und Argmax auf dem FPGA, 1 Mbaud) | `snn_full.fs`, Ausweichvariante `snn_full_115200.fs` | Simulation bitgenau (Kern, SDRAM-Controller, Gesamtsystem über UART), Timing erfüllt; **Test auf dem Board steht aus** |
+| **Vollversion** (54 MHz, SDRAM-Readout und Argmax auf dem FPGA, 1 Mbaud) | `snn_full.fs`, Ausweichvariante `snn_full_115200.fs` | Simulation bitgenau, Timing erfüllt. **Erster Board-Test (25.10.2026):** 1 Mbaud, Laden (5,9 s) und Einzelzugriffe fehlerfrei, aber alle Logits falsch, Verdacht SDRAM-Leselatenz im Burst. Seither ist die Latenz per UART einstellbar und wird automatisch kalibriert. Nächster Test steht aus |
 
 | Datei | Inhalt |
 |---|---|
@@ -94,11 +94,24 @@ für c = 0..N_CLS-1:  Lese-Burst von 200 Wörtern ab c·200 (wout_req / wout_add
 - Wortadresse `{bank[1:0], row[10:0], col[7:0]}`, CL 2, Burstlänge 1
 - ein READ pro Takt, über Zeilengrenzen mit PRECHARGE/ACTIVATE
 - Schreiben mit Auto-Precharge, Refresh alle 600 Takte (Vorgabe 843)
-- SDRAM-Takt = invertierter Systemtakt, Lesedaten `RD_LAT = 3` Takte nach dem READ übernommen
+- SDRAM-Takt = invertierter Systemtakt, Lesedaten `rd_lat` Takte nach dem READ übernommen
 
 In der Simulation prüft ein SDRAM-Modell tRCD, tRP, tRFC, offene Zeilen und den Refresh-Abstand
-(gemessen höchstens 779 Takte). `RD_LAT` ist auf echter Hardware noch zu bestätigen:
-`board_test.py` liest dafür nach dem Laden Stichproben zurück.
+(gemessen höchstens 779 Takte).
+
+**Leselatenz auf echter Hardware:** Beim ersten Board-Test waren Einzelzugriffe korrekt, die Bursts
+des Readouts aber offenbar um ein Wort verschoben. Einzelzugriffe verbergen einen Latenzfehler,
+weil der Datenbus den Wert noch hält. Deshalb ist `rd_lat` jetzt zur Laufzeit einstellbar
+(Befehl `L`, Start 3). `board_test.py` und `nose_bridge.py` kalibrieren sie nach dem Laden mit
+echten Bursts (Befehl `B`) und nehmen die mittlere korrekte Latenz.
+
+Diagnosebefehle der Vollversion:
+
+| Befehl | Antwort | Zweck |
+|---|---|---|
+| `0xA5 'L' lat` | `0x5A 'L' lat` | SDRAM-Leselatenz setzen (2..7) |
+| `0xA5 'B' addr[3] n[2]` | `0x5A 'B' daten[4n]` | n ≤ 256 Wörter als *ein* Burst lesen, wie beim Readout |
+| `0xA5 'Z'` | `0x5A 'Z' zähler[800] summe` | Spikezähler der letzten Klassifikation, trennt Kern- von Readout-Fehlern |
 
 ## 5. Zeit (Simulation)
 
@@ -142,8 +155,9 @@ python3 snn-fpga/tools/board_test.py flywire-snn/model.safetensors flywire-snn/c
 ```
 Ablauf:
 1. Das Skript lädt die 138.400 Wörter von `w_out` ins SDRAM, etwa 6 s bei 1 Mbaud, mit Prüfsumme je 1.024 Wörter.
-2. Es liest 8 × 64 Wörter zurück.
-3. Danach vergleicht es Klasse und alle 692 Logits jeder Probe bitgenau.
+2. Es liest 8 × 64 Wörter einzeln zurück.
+3. Es kalibriert die SDRAM-Leselatenz mit Bursts.
+4. Danach vergleicht es Klasse und alle 692 Logits jeder Probe bitgenau. Bei Abweichung prüft es zusätzlich die Spikezähler.
 
 Das SDRAM behält die Gewichte, bis der Strom weg ist. Danach `--skip-load` weglassen.
 
@@ -154,8 +168,8 @@ Das SDRAM behält die Gewichte, bis der Strom weg ist. Danach `--skip-load` wegl
 | Keine Antwort, LED1 blinkt | Baudrate: BL616 schafft evtl. kein 1 Mbaud → `snn_full_115200.fs` laden und `--baud 115200` |
 | LED2 bleibt aus | SDRAM nicht initialisiert (PLL/Takt prüfen) |
 | Prüfsumme beim Laden falsch | UART-Übertragung gestört → niedrigere Baudrate |
-| Rücklesefehler im SDRAM | Lese-Timing: `RD_LAT` in `sdram_ctrl.v` auf 2 oder 4 ändern und neu bauen |
-| Logits falsch, SDRAM ok | bitte melden (Kern ist im Bring-up bestätigt) |
+| Rücklesefehler im SDRAM oder keine Latenz liefert korrekte Bursts | Lese-Timing außerhalb 2..7 oder Takt/Phase: bitte melden |
+| Logits falsch | `board_test.py` meldet zusätzlich, ob die Spikezähler stimmen (`Kern ok, Readout/SDRAM falsch` oder `Kern rechnet anders`) |
 
 **LEDs** (aktiv low):
 

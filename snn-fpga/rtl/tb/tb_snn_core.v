@@ -34,7 +34,8 @@ module tb_snn_core;
         .start(start), .busy(busy), .done(done), .cls(cls), .cls_logit(cls_logit),
         .wout_req(wout_req), .wout_addr(wout_addr), .wout_valid(wout_valid), .wout_data(wout_data),
         .step_valid(step_valid), .step_spikes(step_spikes),
-        .logit_valid(logit_valid), .logit_idx(logit_idx), .logit_data(logit_data));
+        .logit_valid(logit_valid), .logit_idx(logit_idx), .logit_data(logit_data),
+        .cnt_valid(), .cnt_idx(), .cnt_word(), .dbg_addr(8'd0), .dbg_word());
 
     // ------------------------------------------------------------ Testvektoren
     reg [8:0]   tv_r      [0:N_TV*N_IN-1];

@@ -8,11 +8,10 @@
 // Anfragen werden zwischengespeichert und nach einem faelligen Refresh bedient.
 // SDRAM-Takt = invertierter Systemtakt: Befehle wechseln mit der steigenden Flanke von clk,
 // das SDRAM uebernimmt sie mit der fallenden. Lesedaten (CL = 2) werden RD_LAT Takte nach
-// dem READ mit der steigenden Flanke von clk uebernommen.
+// dem READ mit der steigenden Flanke von clk uebernommen (rd_lat, per UART einstellbar).
 
 module sdram_ctrl #(
     parameter CLK_MHZ  = 54,
-    parameter RD_LAT   = 3,        // Takte vom READ bis zur Uebernahme der Daten
     parameter T_RP     = 2,        // Precharge -> naechster Befehl
     parameter T_RCD    = 2,        // Activate -> Read/Write
     parameter T_RFC    = 6,        // Refresh -> naechster Befehl
@@ -23,6 +22,7 @@ module sdram_ctrl #(
     input  wire        rst,
     output reg         init_done,
     // Lesen
+    input  wire [2:0]  rd_lat,         // Takte vom READ bis zur Uebernahme (2..7), zur Laufzeit
     input  wire        rd_req,
     input  wire [20:0] rd_addr,
     input  wire [8:0]  rd_len,
@@ -77,10 +77,10 @@ module sdram_ctrl #(
     reg [7:0]  rd_pipe = 8'd0;          // Bit n: READ lag vor n+1 Takten auf dem Bus
 
     // Lesedaten im IO-nahen Register uebernehmen: READ ab Flanke n auf dem Bus,
-    // Uebernahme mit Flanke n + RD_LAT (2 <= RD_LAT <= 9)
+    // Uebernahme mit Flanke n + rd_lat (2 <= rd_lat <= 7)
     always @(posedge clk) begin
         rd_pipe  <= {rd_pipe[6:0], cmd == C_RD};
-        rd_valid <= rd_pipe[RD_LAT-2];
+        rd_valid <= rd_pipe[rd_lat - 3'd2];
         rd_data  <= IO_sdram_dq;
     end
 

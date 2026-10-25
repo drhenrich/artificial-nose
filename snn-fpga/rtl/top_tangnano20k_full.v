@@ -8,6 +8,13 @@
 //               Antwort 0x5A 'R' daten[4n]
 //   PC -> FPGA  0xA5 'C' seed[4] r[2 x 52]         klassifizieren (w_out muss geladen sein)
 //               Antwort 0x5A 'C' klasse[2] logit_max[4] logits[4 x N_CLS] summe[4]
+//   Diagnose:
+//   PC -> FPGA  0xA5 'L' lat                       SDRAM-Leselatenz setzen (2..7, Start 3)
+//               Antwort 0x5A 'L' lat
+//   PC -> FPGA  0xA5 'B' addr[3] n[2]              n <= 256 Woerter als EIN Burst lesen (wie Readout)
+//               Antwort 0x5A 'B' daten[4n]
+//   PC -> FPGA  0xA5 'Z'                           Spikezaehler der letzten Klassifikation
+//               Antwort 0x5A 'Z' zaehler[N_HID] summe[1]
 // LEDs (aktiv low): LED0 rechnet, LED1 Herzschlag, LED2 SDRAM bereit, LED3 wechselt je Befehl
 
 module top_tangnano20k_full #(
@@ -73,11 +80,13 @@ module top_tangnano20k_full #(
     wire        c_rreq;
     wire [23:0] c_raddr;
     reg         classify = 1'b0;                 // SDRAM-Leseport gehoert dem Kern
+    reg  [8:0]  t_rlen = 9'd1;
+    reg  [2:0]  rd_lat = 3'd3;
 
     sdram_ctrl #(.CLK_MHZ(CLK_HZ / 1_000_000)) u_sdram (
-        .clk(sclk), .rst(rst), .init_done(sd_init),
+        .clk(sclk), .rst(rst), .init_done(sd_init), .rd_lat(rd_lat),
         .rd_req(classify ? c_rreq : t_rreq), .rd_addr(classify ? c_raddr[20:0] : t_raddr),
-        .rd_len(classify ? N_WOUT[8:0] : 9'd1), .rd_valid(sd_rvalid), .rd_data(sd_rdata),
+        .rd_len(classify ? N_WOUT[8:0] : t_rlen), .rd_valid(sd_rvalid), .rd_data(sd_rdata),
         .wr_req(sd_wreq), .wr_addr(sd_waddr), .wr_data(sd_wdata), .wr_done(sd_wdone),
         .O_sdram_clk(O_sdram_clk), .O_sdram_cke(O_sdram_cke), .O_sdram_cs_n(O_sdram_cs_n),
         .O_sdram_ras_n(O_sdram_ras_n), .O_sdram_cas_n(O_sdram_cas_n), .O_sdram_wen_n(O_sdram_wen_n),
@@ -89,6 +98,8 @@ module top_tangnano20k_full #(
     reg  [5:0] r_addr;
     reg  [8:0] r_data;
     reg  [31:0] seed;
+    reg  [7:0] dbg_addr = 8'd0;
+    wire [27:0] dbg_word;
     wire       busy, done, logit_valid;
     wire [15:0] cls, logit_idx;
     wire signed [31:0] cls_logit, logit_data;
@@ -98,16 +109,25 @@ module top_tangnano20k_full #(
         .start(start), .busy(busy), .done(done), .cls(cls), .cls_logit(cls_logit),
         .wout_req(c_rreq), .wout_addr(c_raddr), .wout_valid(classify & sd_rvalid), .wout_data(sd_rdata),
         .step_valid(), .step_spikes(), .logit_valid(logit_valid), .logit_idx(logit_idx),
-        .logit_data(logit_data), .cnt_valid(), .cnt_idx(), .cnt_word());
+        .logit_data(logit_data), .cnt_valid(), .cnt_idx(), .cnt_word(),
+        .dbg_addr(dbg_addr), .dbg_word(dbg_word));
 
-    reg [31:0] lbuf [0:N_CLS-1];
-    always @(posedge sclk) if (logit_valid) lbuf[logit_idx] <= logit_data;
+    // Puffer fuer Logits bzw. Burst-Daten (Diagnose 'B')
+    localparam N_BUF = (N_CLS > 256) ? N_CLS : 256;
+    reg [31:0] lbuf [0:N_BUF-1];
+    reg        bcap = 1'b0;
+    reg [9:0]  bidx;
+    always @(posedge sclk)
+        if (logit_valid) lbuf[logit_idx] <= logit_data;
+        else if (bcap && sd_rvalid) lbuf[bidx] <= sd_rdata;
 
     // ------------------------------------------------------------ Befehlsablauf
     localparam P_SYNC = 5'd0, P_CMD = 5'd1, P_ARG = 5'd2, P_WDAT = 5'd3, P_WWAIT = 5'd4,
                P_RREQ = 5'd5, P_RWAIT = 5'd6, P_RLO = 5'd7, P_RHI = 5'd8, P_RUN = 5'd9,
                P_TX = 5'd10, P_CHDR = 5'd11, P_CLS = 5'd12, P_CMAX = 5'd13, P_CLOG = 5'd14,
-               P_CLOG2 = 5'd15, P_CSUM = 5'd16, P_WREP = 5'd17, P_RNEXT = 5'd18;
+               P_CLOG2 = 5'd15, P_CSUM = 5'd16, P_WREP = 5'd17, P_RNEXT = 5'd18,
+               P_LSET = 5'd19, P_BREQ = 5'd20, P_BCAP = 5'd21, P_BSEND = 5'd22, P_BSEND2 = 5'd23,
+               P_ZRD = 5'd24, P_ZRD2 = 5'd25, P_ZSEND = 5'd26, P_ZSUM = 5'd27;
     reg [4:0]  ps = P_SYNC, tret;
     reg [7:0]  cmd;
     reg [2:0]  na;                               // Argumentbytes
@@ -139,8 +159,13 @@ module top_tangnano20k_full #(
             cmd <= rx_data; na <= 3'd0; nb <= 2'd0; sum <= 32'd0; kr <= 6'd0;
             cmd_led <= ~cmd_led;
             case (rx_data)
-            "W", "R": ps <= P_ARG;
+            "W", "R", "B": ps <= P_ARG;
             "C":      ps <= P_ARG;
+            "L":      ps <= P_LSET;
+            "Z": begin
+                dbg_addr <= 8'd0;
+                tw <= {16'd0, "Z", 8'h5A}; tn <= 3'd2; tret <= P_ZRD; ps <= P_TX;
+            end
             default:  ps <= P_SYNC;
             endcase
         end
@@ -155,7 +180,7 @@ module top_tangnano20k_full #(
                 t_raddr  <= arg[28:8];
                 sd_waddr <= arg[28:8];
                 n        <= {rx_data, arg[39:32]};
-                ps       <= (cmd == "W") ? P_WDAT : P_RREQ;
+                ps       <= (cmd == "W") ? P_WDAT : (cmd == "B") ? P_BREQ : P_RREQ;
             end
         end
         // ---- W: Woerter empfangen und schreiben
@@ -186,6 +211,45 @@ module top_tangnano20k_full #(
             t_raddr <= t_raddr + 21'd1;
             n       <= n - 16'd1;
             tw <= sd_rdata; tn <= 3'd4; tret <= P_RNEXT; ps <= P_TX;
+        end
+        // ---- L: Leselatenz setzen
+        P_LSET: if (rx_valid) begin
+            rd_lat <= (rx_data[2:0] < 3'd2) ? 3'd2 : rx_data[2:0];
+            tw <= {8'd0, (rx_data[2:0] < 3'd2) ? 8'd2 : {5'd0, rx_data[2:0]}, "L", 8'h5A};
+            tn <= 3'd3; tret <= P_SYNC; ps <= P_TX;
+        end
+        // ---- B: ein Burst von n Woertern in den Puffer, dann senden
+        P_BREQ: begin
+            t_rlen <= (n == 16'd0 || n > 16'd256) ? 9'd256 : n[8:0];
+            n      <= (n == 16'd0 || n > 16'd256) ? 16'd256 : n;
+            t_rreq <= 1'b1;
+            bcap   <= 1'b1;
+            bidx   <= 10'd0;
+            ps     <= P_BCAP;
+        end
+        P_BCAP: if (sd_rvalid) begin
+            bidx <= bidx + 10'd1;
+            if (bidx + 10'd1 == n[9:0]) begin
+                bcap   <= 1'b0;
+                t_rlen <= 9'd1;
+                li     <= 10'd0;
+                tw <= {16'd0, "B", 8'h5A}; tn <= 3'd2; tret <= P_BSEND; ps <= P_TX;
+            end
+        end
+        P_BSEND: if (li == n[9:0]) ps <= P_SYNC; else ps <= P_BSEND2;
+        P_BSEND2: begin tw <= lw; tn <= 3'd4; li <= li + 10'd1; tret <= P_BSEND; ps <= P_TX; end
+        // ---- Z: Spikezaehler senden (4 Neuronen pro Zaehlerwort)
+        P_ZRD:  if (dbg_addr == N_HID / 4 && sum[31]) begin
+                    tw <= {24'd0, sum[7:0]}; tn <= 3'd1; tret <= P_SYNC; sum <= 32'd0; ps <= P_TX;
+                end else ps <= P_ZRD2;                       // dbg_word ab dem naechsten Takt gueltig
+        P_ZRD2: ps <= P_ZSEND;
+        P_ZSEND: begin
+            tw  <= {1'b0, dbg_word[27:21], 1'b0, dbg_word[20:14], 1'b0, dbg_word[13:7], 1'b0, dbg_word[6:0]};
+            tn  <= 3'd4;
+            sum <= {1'b1, 23'd0, sum[7:0] + {1'b0, dbg_word[6:0]} + {1'b0, dbg_word[13:7]}
+                                + {1'b0, dbg_word[20:14]} + {1'b0, dbg_word[27:21]}};
+            dbg_addr <= dbg_addr + 8'd1;
+            tret <= P_ZRD; ps <= P_TX;
         end
         // ---- C: Raten empfangen, rechnen, antworten
         P_RLO: if (rx_valid) begin rlo <= rx_data; ps <= P_RHI; end

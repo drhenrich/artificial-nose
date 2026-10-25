@@ -46,6 +46,7 @@ class Classifier:
                 words = board_test.w_out_words(self.q)
                 board_test.load_sdram(self.ser, words)
                 board_test.check_sdram(self.ser, words)
+            board_test.calibrate(self.ser, board_test.w_out_words(self.q))
 
     def __call__(self, feats):
         x = ((feats - self.mean) / self.std).astype(np.float32)[None, :]

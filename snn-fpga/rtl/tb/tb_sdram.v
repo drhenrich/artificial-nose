@@ -18,7 +18,7 @@ module tb_sdram;
     wire [31:0] s_dq;
 
     sdram_ctrl dut (
-        .clk(clk), .rst(rst), .init_done(init_done),
+        .clk(clk), .rst(rst), .init_done(init_done), .rd_lat(3'd3),
         .rd_req(rd_req), .rd_addr(rd_addr), .rd_len(rd_len), .rd_valid(rd_valid), .rd_data(rd_data),
         .wr_req(wr_req), .wr_addr(wr_addr), .wr_data(wr_data), .wr_done(wr_done),
         .O_sdram_clk(s_clk), .O_sdram_cke(s_cke), .O_sdram_cs_n(s_cs), .O_sdram_ras_n(s_ras),

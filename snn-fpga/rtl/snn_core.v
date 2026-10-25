@@ -48,7 +48,10 @@ module snn_core #(
     // Zaehler-Ausgabe (READOUT = 0)
     output reg                cnt_valid,
     output reg  [7:0]         cnt_idx,
-    output reg  [27:0]        cnt_word
+    output reg  [27:0]        cnt_word,
+    // Zaehler lesen, wenn der Kern ruht (Diagnose): Wort dbg_addr -> dbg_word (1 Takt Latenz)
+    input  wire [7:0]         dbg_addr,
+    output wire [27:0]        dbg_word
 );
 
 `include "params.vh"
@@ -117,12 +120,13 @@ module snn_core #(
     wire        in_ro     = (state == S_RO0) || (state == S_RO1) || (state == S_RO2) || (state == S_CO);
     wire [9:0]  pp_raddr  = (state == S_GEN) ? 10'd1 : ni + 10'd2;   // Ende des naechsten Neurons
     wire [14:0] win_raddr = win_base + c_iss;
-    wire [7:0]  cnt_raddr = in_ro ? jcnt : ni[9:2];
+    wire [7:0]  cnt_raddr = in_ro ? jcnt : (state == S_IDLE) ? dbg_addr : ni[9:2];
     reg  [27:0] pp_q;
     reg  [17:0] syn0_q, syn1_q, win0_q, win1_q;
     reg  signed [15:0] v_q, i_q;
     reg  [27:0] cnt_q;
     reg  [31:0] bout_q;
+    assign dbg_word = cnt_q;
 
     always @(posedge clk) begin
         pp_q   <= pp_mem[pp_raddr];
