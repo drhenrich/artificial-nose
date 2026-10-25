@@ -35,7 +35,7 @@ x (52 DoOR-Rezeptorwerte, standardisiert)
 | Rekurrente Gewichte | `recurrent ⊙ mask ⊙ sign`. `recurrent` ist ein freier Parameter **ohne `abs()`**, initialisiert symmetrisch um 0 (Kaiming) | Die Model Card sagt „nur die Beträge sind gelernt“, der Code erzwingt das aber nicht. Effektive Vorzeichen können gegen das Konnektom kippen. Biologisch fixiert ist also sicher nur die **Topologie**. Hardware: effektive Gewichte offline berechnen und **vorzeichenbehaftet pro Synapse** speichern (INT8). Das Skript misst, wie viele Vorzeichen gekippt sind |
 | Konvention | `spk_prev @ W_effᵀ` → `W_eff[post, pre]` | Zeilen = Ziel, Spalten = Quelle. Die CSR-Liste wird nach Spalten (präsynaptisch) sortiert |
 | Eingang | Pro Messung Min-Max auf [0, 1]; Projektion von `bernoulli(r) * r` | Der stärkste Kanal ist immer 1, der schwächste immer 0. **Absolute Konzentration geht verloren** (Folgen in 3.2 und 7.2). Eingangsstrom = `W_in[i,k] · r_k` pro Eingangsspike, also Multiplikationen |
-| Erster Zeitschritt | Eingang landet erst am Ende eines Schritts im Synapsenstrom | In Schritt 1 kann kein Neuron feuern, effektiv tragen 19 Schritte Information |
+| LIF-Reihenfolge | Norse 1.1.0: Eingang zuerst auf den Synapsenstrom, `v` rechnet schon mit dem neuen Strom (mit `verify_torch.py` geprüft) | Ältere Norse-Versionen rechnen andersherum. Die Norse-Version der Trainingsumgebung prüfen (`pip show norse`) |
 | Readout | `spikes_acc / 20` → `Linear(800 → 692)` **mit Bias** | Die Hardware zählt Spikes (5 Bit). Der Faktor 1/20 wird in `W_out` eingerechnet, den Bias addiert B9 |
 | Auswertung | 5× Monte-Carlo-Mittel über die Poisson-Kodierung | Auf dem FPGA 5 Durchläufe mit verschiedenen LFSR-Seeds und die Spikezähler summieren, Readout nur einmal (≈ 3 ms gesamt) |
 | Daten | DoOR 2.0 (CC BY-SA 4.0), **692 Odorant-Klassen** (laut `config.json`, die Model Card nennt veraltet 500) | Siehe Lizenz-Risiko in Abschnitt 10 |
@@ -186,19 +186,19 @@ Ablauf pro Zeitschritt *t*:
            I[i] += W_eff[i,j]                       // vorzeichenbehaftet, INT8
 3. Für jeden Eingangskanal k mit Spike e[k]=1 (von B0 mitgesendet):
            I[i] += W_in[i,k] · r[k]   (für alle i dieses Boards, 4 Multiplizierer parallel)
-4. Für i = 0..99:                        // LIF-Update in Norse-Reihenfolge (LIFCell)
-       v_dec = v[i] + K_MEM·(V_LEAK − v[i] + i_syn[i])   // K_MEM = dt·tau_mem_inv (Std: 0,1)
-       i_dec = i_syn[i] − K_SYN·i_syn[i]                 // K_SYN = dt·tau_syn_inv (Std: 0,2)
+4. Für i = 0..99:                        // LIF-Update wie Norse 1.1.0 (lif_feed_forward_step)
+       i_new = i_syn[i] + I[i];  I[i] = 0                // Eingang ZUERST auf den Strom
+       v_dec = v[i] + K_MEM·(V_LEAK − v[i] + i_new)      // K_MEM = dt·tau_mem_inv = 0,1
+       i_syn[i] = i_new − K_SYN·i_new                    // K_SYN = dt·tau_syn_inv = 0,2
        z     = (v_dec > V_TH)                            // harte Schwelle in der Inferenz
        v[i]  = z ? V_RESET : v_dec
-       i_syn[i] = i_dec + I[i];  I[i] = 0                // Eingang erst NACH dem v-Update
        if z: spike[i]=1; count[i]++
 5. Lege eigene 100 Spike-Bits in den Ring-Frame
 ```
 
-- **Wichtig für Bitgenauigkeit:** Norse rechnet `v` mit dem *alten* Synapsenstrom und addiert den neuen Eingang erst danach auf den Strom. Ein naiver LIF-Kern liegt deshalb um einen Zeitschritt daneben.
+- **Wichtig für Bitgenauigkeit:** Norse 1.1.0 addiert den Eingang zuerst auf den Strom und zerfällt ihn danach. Ältere Norse-Versionen rechnen `v` mit dem alten Strom. Ein Kern in der falschen Reihenfolge liegt einen Zeitschritt daneben (gemessen: Logit-Abweichung 7·10⁻², 16 % anderes Argmax). `verify_torch.py` deckt das auf.
 - Die Norse-Standardwerte 0,1 und 0,2 (im Code bestätigt) sind keine Zweierpotenzen. Statt das Netz für Shift-Leaks neu zu trainieren, multipliziert der Kern mit Q0.16-Konstanten. Ein zeitmultiplexter Kern braucht dafür 2 der 48 Multiplizierer, so bleiben die vortrainierten Gewichte direkt nutzbar.
-- Fixpunkt: Potentiale und Ströme INT16 mit Sättigung, `v_th = 1,0` ≙ 2¹⁰ (Q5.10). Gewichte INT8 mit einer Zweierpotenz-Skala pro Tensor, die das Skript vorschlägt (`2^-frac`). Die Umrechnung nach Q5.10 ist dann ein Shift.
+- Fixpunkt: Potentiale und Ströme INT16 mit Sättigung, Standard Q5.10 (`v_th` = 1024). Meldet `snn_ref.py` Sättigungen, auf Q6.9 (`--frac 9`) wechseln. Gewichte INT8 mit einer Zweierpotenz-Skala pro Tensor. Die Umrechnung ins Zustandsformat ist dann ein Shift.
 - Vorzeichen: Weil `recurrent` nicht auf ≥ 0 beschränkt ist, wird das effektive Vorzeichen **pro Synapse** gespeichert. Zeigt das Skript bei den echten Gewichten 0 % gekippte Vorzeichen und Dale-Konformität, reicht ein Vorzeichen pro präsynaptischem Neuron, und die Synapsen bekommen eine Bitstufe mehr Auflösung.
 - **Poisson-Eingang:** Ein LFSR pro Kanal auf B0 setzt pro Zeitschritt `e[k] = (rand9 < r_k + r_k/128)` (9-Bit-Vergleich, damit `r = 255` sicher immer feuert). Für die 5 Monte-Carlo-Durchläufe startet das LFSR mit verschiedenen Seeds. `r[52]` geht einmal pro Inferenz per Steuerframe an alle Boards.
 - **Verifikation:** `torch.bernoulli` lässt sich in Hardware nicht bitgleich nachbauen. Für den Bitvergleich gibt es deshalb einen Testmodus, in dem B0 eine aus Python exportierte Folge `e_t` abspielt. Mit LFSR wird statistisch verglichen (Genauigkeit über viele Proben).
@@ -237,12 +237,12 @@ entspricht einer Hardware-Operation:
 
 | Größe | Format | Bemerkung |
 |---|---|---|
-| `v`, `i_syn` | int16, Q5.10 (1,0 = 1024), Sättigung | `V_TH` = 1024, Reset auf 0 |
+| `v`, `i_syn` | int16, Standard Q5.10 (1,0 = 1024), Sättigung; `--frac` wählt das Format | `V_TH` = 2^frac, Reset auf 0 |
 | Rate `r` | Q0.8, 0…256 (256 = 1,0) | MCU liefert Min-Max-normierte Werte |
 | Eingangsspike | `xorshift32`, `e = (x[31:24] < r)` | Pro Inferenz ein Generator, Reihenfolge Lauf → Schritt → Kanal, Seed pro Lauf `seed + m·0x9E3779B9` |
 | `W_in`, `W_rec`, `W_out` | int8 mit Zweierpotenz-Skala `2^-s` pro Tensor | Skala aus `max|w|` |
 | Akkumulatoren | `acc_in = Σ e·r·W_in`, `acc_rec = Σ spk·W_rec` | Getrennt, danach je ein Rundungs-Shift nach Q5.10 (Halbe aufwärts) |
-| Leak | `(K·x + 2^15) >> 16`, K_MEM = 6554, K_SYN = 13107 | 0,1 und 0,2 in Q0.16 |
+| LIF | `i_new = sat(i + cur)`, `v_dec = sat(v + mulq16(K_MEM, i_new − v))`, `i = i_new − mulq16(K_SYN, i_new)` | `mulq16(K, x) = (K·x + 2^15) >> 16`, K_MEM = 6554, K_SYN = 13107 |
 | Readout | `counts · W_out_q + b_q` (int32) | `b_q = b · 2^s_out · 20 · M`, Argmax direkt auf den Integern |
 
 `snn_ref.py` gibt die beobachteten Maximalwerte der Akkumulatoren aus, daraus folgen die

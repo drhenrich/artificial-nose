@@ -55,11 +55,12 @@ def main():
     ap.add_argument("mask")
     ap.add_argument("--out", default="build/variant_e")
     ap.add_argument("--runs", type=int, default=5)
+    ap.add_argument("--frac", type=int, default=snn_ref.FRAC, help="wie bei snn_ref.py")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    q = snn_ref.quantize(snn_ref.load_params(args.weights, args.mask), args.runs)
+    q = snn_ref.quantize(snn_ref.load_params(args.weights, args.mask), args.runs, frac=args.frac)
     h, n_in = q.w_in.shape
     k = q.w_out.shape[0]
     assert h <= 1024 and n_in % 2 == 0
@@ -91,13 +92,13 @@ localparam N_CLS   = {k};
 localparam N_SYN   = {n_syn};
 localparam T_STEPS = {snn_ref.T_STEPS};
 localparam N_RUNS  = {q.runs};
-localparam FRAC    = {snn_ref.FRAC};
+localparam FRAC    = {q.frac};
 localparam R_FRAC  = {snn_ref.R_FRAC};
-localparam SH_IN   = {q.s_in + snn_ref.R_FRAC - snn_ref.FRAC};   // acc_in  -> Q5.10
-localparam SH_REC  = {q.s_rec - snn_ref.FRAC};   // acc_rec -> Q5.10
+localparam SH_IN   = {q.s_in + snn_ref.R_FRAC - q.frac};   // acc_in  -> Q5.10
+localparam SH_REC  = {q.s_rec - q.frac};   // acc_rec -> Q5.10
 localparam K_MEM   = {snn_ref.K_MEM};
 localparam K_SYN   = {snn_ref.K_SYN};
-localparam V_TH    = {1 << snn_ref.FRAC};
+localparam V_TH    = {1 << q.frac};
 """)
 
     # Rueckleseprobe

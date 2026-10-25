@@ -24,7 +24,7 @@ DT, TAU_MEM_INV, TAU_SYN_INV = 1e-3, 100.0, 200.0
 V_LEAK, V_TH, V_RESET = 0.0, 1.0, 0.0
 
 # Fixpunkt-Format
-FRAC = 10                      # v, i in Q5.10 (int16), V_TH = 1.0 = 1024
+FRAC = 10                      # Standard: v, i in Q5.10 (int16), V_TH = 1.0 = 1024; per --frac aenderbar
 R_FRAC = 8                     # Eingangsrate r in Q0.8, 0..256 (256 = 1.0)
 K_MEM = round(DT * TAU_MEM_INV * 2 ** 16)   # 6554  (0.1 in Q0.16)
 K_SYN = round(DT * TAU_SYN_INV * 2 ** 16)   # 13107 (0.2 in Q0.16)
@@ -66,15 +66,16 @@ class QParams:
     s_rec: int
     s_out: int
     runs: int
+    frac: int = FRAC   # Nachkommabits von v und i (int16)
 
 
-def quantize(p, runs, bits=8):
+def quantize(p, runs, bits=8, frac=FRAC):
     s_in, s_rec, s_out = (pow2_frac(p[k], bits) for k in ("w_in", "w_rec", "w_out"))
     # Readout: logit = (counts @ w_out_q.T) * 2^-s_out / (T*runs) + b
     #   -> b in derselben Integer-Skala: b_q = b * 2^s_out * T * runs
     b_q = np.round(p["b_out"].astype(np.float64) * 2.0 ** s_out * T_STEPS * runs).astype(np.int64)
     return QParams(quant(p["w_in"], s_in, bits), quant(p["w_rec"], s_rec, bits),
-                   quant(p["w_out"], s_out, bits), b_q, s_in, s_rec, s_out, runs)
+                   quant(p["w_out"], s_out, bits), b_q, s_in, s_rec, s_out, runs, frac)
 
 
 # ---------------------------------------------------------------- Eingang
@@ -132,12 +133,12 @@ def float_forward(p, x, e):
         acc = np.zeros((b, h), np.float32)
         for t in range(steps):
             cur = (e[m, t] * r) @ p["w_in"].T + spk @ p["w_rec"].T
-            # Norse lif_feed_forward_step
-            v_dec = v + np.float32(DT * TAU_MEM_INV) * ((V_LEAK - v) + i)
-            i_dec = i + np.float32(-DT * TAU_SYN_INV) * i
+            # Norse 1.1.0 lif_feed_forward_step: Eingang zuerst auf i, v rechnet mit dem neuen i
+            i_new = i + cur
+            v_dec = v + np.float32(DT * TAU_MEM_INV) * ((V_LEAK - v) + i_new)
+            i = i_new + np.float32(-DT * TAU_SYN_INV) * i_new
             z = (v_dec - V_TH > 0).astype(np.float32)
             v = (1 - z) * v_dec + z * V_RESET
-            i = i_dec + cur
             spk = z
             acc += z
             spikes[m, t] = z > 0
@@ -173,8 +174,8 @@ def fixed_forward(q, r_q, e, stats=None):
     h = q.w_rec.shape[0]
     counts = np.zeros((b, h), np.int64)
     spikes = np.zeros((runs, steps, b, h), dtype=bool)
-    sh_in = q.s_in + R_FRAC - FRAC
-    sh_rec = q.s_rec - FRAC
+    sh_in = q.s_in + R_FRAC - q.frac
+    sh_rec = q.s_rec - q.frac
     for m in range(runs):
         v = np.zeros((b, h), np.int64)
         i = np.zeros((b, h), np.int64)
@@ -183,11 +184,11 @@ def fixed_forward(q, r_q, e, stats=None):
             acc_in = (e[m, t] * r_q) @ q.w_in.T          # Summe ueber Eingangsspikes: w_in * r
             acc_rec = spk @ q.w_rec.T                    # Summe ueber praesyn. Spikes: w_rec
             cur = shift_round(acc_in, sh_in) + shift_round(acc_rec, sh_rec)
-            v_dec = sat16(v + mul_q16(K_MEM, i - v), stats, "sat_v")     # V_LEAK = 0
-            i_dec = i - mul_q16(K_SYN, i)
-            z = v_dec > (1 << FRAC)
+            i_new = sat16(i + cur, stats, "sat_i")                           # Norse 1.1.0: Eingang zuerst
+            v_dec = sat16(v + mul_q16(K_MEM, i_new - v), stats, "sat_v")     # V_LEAK = 0
+            i = i_new - mul_q16(K_SYN, i_new)
+            z = v_dec > (1 << q.frac)
             v = np.where(z, 0, v_dec)                    # V_RESET = 0
-            i = sat16(i_dec + cur, stats, "sat_i")
             spk = z.astype(np.int64)
             counts += spk
             spikes[m, t] = z
@@ -218,13 +219,14 @@ def main():
     ap.add_argument("--n", type=int, default=200, help="Anzahl Proben (Zufall oder erste n aus --data)")
     ap.add_argument("--runs", type=int, default=5, help="Monte-Carlo-Laeufe pro Probe")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--frac", type=int, default=FRAC, help="Nachkommabits von v/i (10 = Q5.10)")
     ap.add_argument("--dump", help="Testvektoren fuer die HDL-Simulation als npz schreiben")
     args = ap.parse_args()
 
     p = load_params(args.weights, args.mask)
-    q = quantize(p, args.runs)
+    q = quantize(p, args.runs, frac=args.frac)
     print(f"Skalen: w_in 2^-{q.s_in}, w_rec 2^-{q.s_rec}, w_out 2^-{q.s_out} | "
-          f"Shifts in Q{15 - FRAC}.{FRAC}: Eingang {q.s_in + R_FRAC - FRAC}, rekurrent {q.s_rec - FRAC}")
+          f"Shifts in Q{15 - q.frac}.{q.frac}: Eingang {q.s_in + R_FRAC - q.frac}, rekurrent {q.s_rec - q.frac}")
 
     y = None
     if args.data:
@@ -264,7 +266,7 @@ def main():
         np.savez_compressed(
             args.dump, r_q=r_q[:nd], e=e[:, :, :nd], spikes=si[:, :, :nd], counts=counts[:nd],
             logits_int=li[:nd], w_in=q.w_in, w_rec=q.w_rec, w_out=q.w_out, b_out=q.b_out,
-            shifts=np.array([q.s_in, q.s_rec, q.s_out, FRAC, R_FRAC, K_MEM, K_SYN, q.runs]))
+            shifts=np.array([q.s_in, q.s_rec, q.s_out, q.frac, R_FRAC, K_MEM, K_SYN, q.runs]))
         print(f"\nTestvektoren ({nd} Proben) geschrieben: {args.dump}")
 
 

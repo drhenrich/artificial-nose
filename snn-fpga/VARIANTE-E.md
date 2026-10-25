@@ -67,11 +67,11 @@ Phase B  neuron_loop         13 Takte pro Neuron
          für i = 0..799:
              acc_in = Σ_k e[k]·r[k]·w_in[i,k]   // 4 Gewichte/Takt: Dual-Port × 2 pro Wort
              cur    = rnd(acc_in, SH_IN) + rnd(acc_rec[i], SH_REC);  acc_rec[i] = 0
-             v_dec  = sat16(v[i] + mulq16(K_MEM, i_syn[i] − v[i]))
-             i_dec  = i_syn[i] − mulq16(K_SYN, i_syn[i])
+             i_new  = sat16(i_syn[i] + cur)                    // Norse 1.1.0: Eingang zuerst
+             v_dec  = sat16(v[i] + mulq16(K_MEM, i_new − v[i]))
+             i_syn[i] = i_new − mulq16(K_SYN, i_new)
              z      = v_dec > V_TH
              v[i]   = z ? 0 : v_dec
-             i_syn[i] = sat16(i_dec + cur)
              s_curr[i] = z;  counts[i] += z
          s_prev ← s_curr
 ```
