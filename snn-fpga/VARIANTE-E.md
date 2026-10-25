@@ -100,16 +100,23 @@ In der Simulation prüft ein SDRAM-Modell tRCD, tRP, tRFC, offene Zeilen und den
 (gemessen höchstens 779 Takte).
 
 **Leselatenz auf echter Hardware:** Beim ersten Board-Test waren Einzelzugriffe korrekt, die Bursts
-des Readouts aber offenbar um ein Wort verschoben. Einzelzugriffe verbergen einen Latenzfehler,
-weil der Datenbus den Wert noch hält. Deshalb ist `rd_lat` jetzt zur Laufzeit einstellbar
-(Befehl `L`, Start 3). `board_test.py` und `nose_bridge.py` kalibrieren sie nach dem Laden mit
-echten Bursts (Befehl `B`) und nehmen die mittlere korrekte Latenz.
+des Readouts aber falsch. Einzelzugriffe verbergen einen Abtastfehler, weil der Datenbus den Wert
+noch hält. Der zweite Test (Latenz 2…7, nur steigende Flanke) ergab:
+- Abtastung nach 2 Takten: 27 % der Burst-Wörter richtig
+- Abtastung nach 3 und mehr Takten: praktisch keine
+
+Der Abtastzeitpunkt lag also auf dem Datenwechsel. Das gültige Fenster liegt etwa einen halben
+Takt früher als im Modell angenommen.
+
+Deshalb gibt es jetzt:
+- **Einstellbarkeit zur Laufzeit:** Latenz 2…7 plus Abtastung auf der **fallenden Flanke**, also einen halben Takt früher (Befehl `L`)
+- **Kalibrierung:** `board_test.py` und `nose_bridge.py` prüfen nach dem Laden alle Zeitpunkte von 1,5 bis 7,0 Takten in halben Takten mit echten Bursts (Befehl `B`) und nehmen die Mitte des längsten fehlerfreien Bereichs. Erwartet ist für das Board die Abtastung nach 2,5 Takten (fallende Flanke)
 
 Diagnosebefehle der Vollversion:
 
 | Befehl | Antwort | Zweck |
 |---|---|---|
-| `0xA5 'L' lat` | `0x5A 'L' lat` | SDRAM-Leselatenz setzen (2..7) |
+| `0xA5 'L' code` | `0x5A 'L' code` | SDRAM-Abtastung: Bits 2:0 Latenz 2..7, Bit 3 fallende Flanke (½ Takt früher) |
 | `0xA5 'B' addr[3] n[2]` | `0x5A 'B' daten[4n]` | n ≤ 256 Wörter als *ein* Burst lesen, wie beim Readout |
 | `0xA5 'Z'` | `0x5A 'Z' zähler[800] summe` | Spikezähler der letzten Klassifikation, trennt Kern- von Readout-Fehlern |
 

@@ -23,6 +23,7 @@ module sdram_ctrl #(
     output reg         init_done,
     // Lesen
     input  wire [2:0]  rd_lat,         // Takte vom READ bis zur Uebernahme (2..7), zur Laufzeit
+    input  wire        rd_neg,         // 1: Daten mit der fallenden Flanke einen halben Takt frueher abtasten
     input  wire        rd_req,
     input  wire [20:0] rd_addr,
     input  wire [8:0]  rd_len,
@@ -76,12 +77,14 @@ module sdram_ctrl #(
     reg [31:0] wd;
     reg [7:0]  rd_pipe = 8'd0;          // Bit n: READ lag vor n+1 Takten auf dem Bus
 
-    // Lesedaten im IO-nahen Register uebernehmen: READ ab Flanke n auf dem Bus,
-    // Uebernahme mit Flanke n + rd_lat (2 <= rd_lat <= 7)
+    // Lesedaten abtasten: READ ab Flanke n auf dem Bus. Abtastzeitpunkt n + rd_lat
+    // (steigende Flanke) bzw. n + rd_lat - 1/2 (fallende Flanke, rd_neg = 1); gueltig ab n + rd_lat.
+    reg [31:0] dq_neg;
+    always @(negedge clk) dq_neg <= IO_sdram_dq;
     always @(posedge clk) begin
         rd_pipe  <= {rd_pipe[6:0], cmd == C_RD};
         rd_valid <= rd_pipe[rd_lat - 3'd2];
-        rd_data  <= IO_sdram_dq;
+        rd_data  <= rd_neg ? dq_neg : IO_sdram_dq;
     end
 
     always @(posedge clk) begin

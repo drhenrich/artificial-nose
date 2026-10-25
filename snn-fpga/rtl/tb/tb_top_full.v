@@ -114,6 +114,18 @@ module tb_top_full;
         // ---- L + B: Latenz durchprobieren, Burst ueber Zeilengrenze (Adresse 230..429)
         good_lat = 0;
         for (lat = 2; lat <= 5; lat = lat + 1) begin
+            send_byte(8'hA5); send_byte("L"); send_byte(lat | 8);
+            recv_byte; recv_byte; recv_byte;
+            if (got !== (lat | 8)) begin $display("L-Antwort %0d statt %0d", got, lat | 8); errors = errors + 1; end
+            send_byte(8'hA5); send_byte("B");
+            send_byte(8'd230); send_byte(8'd0); send_byte(8'd0); send_byte(8'd200); send_byte(8'd0);
+            recv_byte; recv_byte;
+            bad = 0;
+            for (i = 0; i < 200; i = i + 1) begin recv_word; if (gw !== wref[230 + i]) bad = bad + 1; end
+            $display("Burst, fallende Flanke, Latenz %0d (Abtastung nach %0d,5 Takten): %0d falsch", lat, lat - 1, bad);
+            if (lat == 4 && bad != 0) errors = errors + 1;     // Modell: Abtastung nach 3,5 Takten korrekt
+        end
+        for (lat = 2; lat <= 5; lat = lat + 1) begin
             send_byte(8'hA5); send_byte("L"); send_byte(lat);
             recv_byte; recv_byte; recv_byte;
             if (got !== lat) begin $display("L-Antwort %0d statt %0d", got, lat); errors = errors + 1; end

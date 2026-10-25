@@ -78,25 +78,44 @@ def burst_ok(ser, words, start=230, n=200):
     return int((np.frombuffer(resp[2:], dtype="<u4") != words[start:start + n]).sum())
 
 
+def lat_code(t2):
+    """Abtastzeit t2 in halben Takten (4..14) -> Code fuer 'L': Latenz und fallende Flanke."""
+    lat = (t2 + 1) // 2
+    return lat | (8 if t2 % 2 else 0)
+
+
+def lat_name(t2):
+    return f"{t2 / 2:.1f} Takte ({'fallende' if t2 % 2 else 'steigende'} Flanke)"
+
+
 def calibrate(ser, words, force=None):
-    """SDRAM-Leselatenz bestimmen: Burst wie beim Readout fuer Latenz 2..7 pruefen."""
+    """SDRAM-Abtastzeitpunkt bestimmen: Burst wie beim Readout fuer 1,5 .. 7,0 Takte in halben
+    Takten pruefen und die Mitte des laengsten fehlerfreien Bereichs nehmen."""
     if force:
-        set_latency(ser, force)
-        print(f"SDRAM-Leselatenz vorgegeben: {force}, Burst-Fehler {burst_ok(ser, words)}")
-        return force
-    good = []
-    for lat in range(2, 8):
-        set_latency(ser, lat)
-        bad = burst_ok(ser, words)
-        print(f"  Latenz {lat}: {bad} von 200 Burst-Woertern falsch")
-        if bad == 0:
-            good.append(lat)
-    if not good:
-        raise IOError("keine SDRAM-Leselatenz liefert korrekte Bursts")
-    lat = good[len(good) // 2]
-    set_latency(ser, lat)
-    print(f"SDRAM-Leselatenz: {lat} (korrekt: {good})")
-    return lat
+        code = force
+        set_latency(ser, code)
+        print(f"SDRAM-Lese-Code vorgegeben: {code}, Burst-Fehler {burst_ok(ser, words)}")
+        return code
+    result = {}
+    for t2 in range(3, 15):                 # 1,5 .. 7,0 Takte
+        set_latency(ser, lat_code(t2))
+        result[t2] = burst_ok(ser, words)
+        print(f"  Abtastung nach {lat_name(t2)}: {result[t2]} von 200 Burst-Woertern falsch")
+    runs, cur = [], []
+    for t2 in sorted(result):
+        if result[t2] == 0:
+            cur.append(t2)
+        elif cur:
+            runs.append(cur); cur = []
+    if cur:
+        runs.append(cur)
+    if not runs:
+        raise IOError("kein Abtastzeitpunkt liefert korrekte Bursts")
+    best = max(runs, key=len)
+    t2 = best[(len(best) - 1) // 2]
+    set_latency(ser, lat_code(t2))
+    print(f"SDRAM-Abtastung: {lat_name(t2)}, fehlerfreier Bereich {best[0] / 2:.1f}..{best[-1] / 2:.1f} Takte")
+    return lat_code(t2)
 
 
 def read_counts(ser, h):
@@ -117,7 +136,7 @@ def main():
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--frac", type=int, default=snn_ref.FRAC)
     ap.add_argument("--skip-load", action="store_true", help="w_out ist schon im SDRAM")
-    ap.add_argument("--lat", type=int, help="SDRAM-Leselatenz vorgeben statt kalibrieren")
+    ap.add_argument("--lat", type=int, help="SDRAM-Lese-Code vorgeben statt kalibrieren (Bits 2:0 Latenz, +8 fallende Flanke)")
     ap.add_argument("--data", help="npz mit X (N x 52) und optional y (N,)")
     args = ap.parse_args()
     baud = args.baud or (1_000_000 if args.mode == "full" else 115_200)

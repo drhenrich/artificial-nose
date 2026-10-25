@@ -9,7 +9,7 @@
 //   PC -> FPGA  0xA5 'C' seed[4] r[2 x 52]         klassifizieren (w_out muss geladen sein)
 //               Antwort 0x5A 'C' klasse[2] logit_max[4] logits[4 x N_CLS] summe[4]
 //   Diagnose:
-//   PC -> FPGA  0xA5 'L' lat                       SDRAM-Leselatenz setzen (2..7, Start 3)
+//   PC -> FPGA  0xA5 'L' lat                       SDRAM-Leselatenz: Bits 2:0 = 2..7 (Start 3), Bit 3 = fallende Flanke
 //               Antwort 0x5A 'L' lat
 //   PC -> FPGA  0xA5 'B' addr[3] n[2]              n <= 256 Woerter als EIN Burst lesen (wie Readout)
 //               Antwort 0x5A 'B' daten[4n]
@@ -82,9 +82,10 @@ module top_tangnano20k_full #(
     reg         classify = 1'b0;                 // SDRAM-Leseport gehoert dem Kern
     reg  [8:0]  t_rlen = 9'd1;
     reg  [2:0]  rd_lat = 3'd3;
+    reg         rd_neg = 1'b0;
 
     sdram_ctrl #(.CLK_MHZ(CLK_HZ / 1_000_000)) u_sdram (
-        .clk(sclk), .rst(rst), .init_done(sd_init), .rd_lat(rd_lat),
+        .clk(sclk), .rst(rst), .init_done(sd_init), .rd_lat(rd_lat), .rd_neg(rd_neg),
         .rd_req(classify ? c_rreq : t_rreq), .rd_addr(classify ? c_raddr[20:0] : t_raddr),
         .rd_len(classify ? N_WOUT[8:0] : t_rlen), .rd_valid(sd_rvalid), .rd_data(sd_rdata),
         .wr_req(sd_wreq), .wr_addr(sd_waddr), .wr_data(sd_wdata), .wr_done(sd_wdone),
@@ -212,10 +213,11 @@ module top_tangnano20k_full #(
             n       <= n - 16'd1;
             tw <= sd_rdata; tn <= 3'd4; tret <= P_RNEXT; ps <= P_TX;
         end
-        // ---- L: Leselatenz setzen
+        // ---- L: Leselatenz setzen (Bits 2:0 Latenz, Bit 3 fallende Flanke)
         P_LSET: if (rx_valid) begin
             rd_lat <= (rx_data[2:0] < 3'd2) ? 3'd2 : rx_data[2:0];
-            tw <= {8'd0, (rx_data[2:0] < 3'd2) ? 8'd2 : {5'd0, rx_data[2:0]}, "L", 8'h5A};
+            rd_neg <= rx_data[3];
+            tw <= {8'd0, 4'd0, rx_data[3], (rx_data[2:0] < 3'd2) ? 3'd2 : rx_data[2:0], "L", 8'h5A};
             tn <= 3'd3; tret <= P_SYNC; ps <= P_TX;
         end
         // ---- B: ein Burst von n Woertern in den Puffer, dann senden
