@@ -17,7 +17,7 @@ Kenyonzellen.
 | Bitstream (yosys + nextpnr-himbaechel + apycula) | 21 % LUT, 37 von 46 BSRAM, Fmax 58 MHz |
 | **Test auf dem Tang Nano 20K (Bring-up)** | **10 von 10 Proben bitgenau (8.000 Spikezähler), 187 ms pro Probe** |
 | Schnellerer Kern (beide Synapsenhälften parallel, 4 Eingangsgewichte/Takt, Pipeline) | 112 → **31,8 ms** pro Klassifikation (54 MHz), Simulation bitgenau |
-| SDRAM-Controller, Readout und Argmax auf dem FPGA, Vollversion mit UART-Befehlen | Simulation bitgenau (mit SDRAM-Modell), Bitstream gebaut, Timing erfüllt; Board-Test steht aus |
+| SDRAM-Controller, Readout und Argmax auf dem FPGA, Vollversion mit UART-Befehlen | **Auf dem Board bestätigt: 10/10 Proben, alle Logits und Klassen bitgenau, 66 ms pro Probe** |
 | Gassensoren (Wio Terminal), Neutraining, Live-Bridge mit ROS 2 | Kette mit synthetischen Daten geprüft, siehe [SENSORIK.md](SENSORIK.md) |
 
 Details zu Variante E, Speicherplan, Zeitbudget und Inbetriebnahme: [VARIANTE-E.md](VARIANTE-E.md).

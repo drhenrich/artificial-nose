@@ -9,7 +9,7 @@
 //   PC -> FPGA  0xA5 'C' seed[4] r[2 x 52]         klassifizieren (w_out muss geladen sein)
 //               Antwort 0x5A 'C' klasse[2] logit_max[4] logits[4 x N_CLS] summe[4]
 //   Diagnose:
-//   PC -> FPGA  0xA5 'L' lat                       SDRAM-Leselatenz: Bits 2:0 = 2..7 (Start 3), Bit 3 = fallende Flanke
+//   PC -> FPGA  0xA5 'L' lat                       SDRAM-Leselatenz: Bits 2:0 = 2..7, Bit 3 = fallende Flanke (Start 3 + fallend)
 //               Antwort 0x5A 'L' lat
 //   PC -> FPGA  0xA5 'B' addr[3] n[2]              n <= 256 Woerter als EIN Burst lesen (wie Readout)
 //               Antwort 0x5A 'B' daten[4n]
@@ -81,8 +81,8 @@ module top_tangnano20k_full #(
     wire [23:0] c_raddr;
     reg         classify = 1'b0;                 // SDRAM-Leseport gehoert dem Kern
     reg  [8:0]  t_rlen = 9'd1;
-    reg  [2:0]  rd_lat = 3'd3;
-    reg         rd_neg = 1'b0;
+    reg  [2:0]  rd_lat = 3'd3;                   // Start: Abtastung nach 2,5 Takten (fallende Flanke),
+    reg         rd_neg = 1'b1;                   // auf dem Tang Nano 20K gemessen (25.10.2026)
 
     sdram_ctrl #(.CLK_MHZ(CLK_HZ / 1_000_000)) u_sdram (
         .clk(sclk), .rst(rst), .init_done(sd_init), .rd_lat(rd_lat), .rd_neg(rd_neg),

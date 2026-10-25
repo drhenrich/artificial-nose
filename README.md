@@ -28,7 +28,7 @@ hat 800 LIF-Neuronen, deren Verschaltung aus dem FlyWire-Konnektom der Fruchtfli
 Es läuft bitgenau auf einem Tang Nano 20K (Gowin GW2AR-18) und ist für den Einsatz auf einem
 DeepRobotics Lite3 gedacht.
 
-- **Stand:** Verilog-Kern auf dem Board bestätigt, alle Spikezähler in 10 von 10 Proben bitgenau wie das Python-Referenzmodell. Vollversion mit SDRAM-Readout (31,8 ms pro Klassifikation) und Sensor-Neutraining in der Simulation verifiziert
+- **Stand:** Verilog-Kern auf dem Board bestätigt, alle Spikezähler in 10 von 10 Proben bitgenau wie das Python-Referenzmodell. Vollversion mit SDRAM-Readout auf dem Board bestätigt (alle Logits bitgenau, 66 ms pro Probe inkl. UART), Sensor-Neutraining in der Simulation verifiziert
 - **Einstieg:** [snn-fpga/README.md](./snn-fpga/README.md), Konzept in [snn-fpga/KONZEPT.md](./snn-fpga/KONZEPT.md), Hardware in [snn-fpga/VARIANTE-E.md](./snn-fpga/VARIANTE-E.md)
 
 ## Author <!-- omit in toc -->

@@ -9,7 +9,7 @@ Das veröffentlichte Modell (800 Neuronen, 14.998 Synapsen, 692 Klassen) passt v
 | Version | Bitstream | Status |
 |---|---|---|
 | Bring-up (27 MHz, Zählerausgabe, Readout auf dem PC) | `snn_bringup.fs` (früher `snn_tangnano20k.fs`) | **Auf dem Board bestätigt (25.10.2026):** 10/10 Proben, alle 8.000 Spikezähler bitgenau, 187 ms pro Probe |
-| **Vollversion** (54 MHz, SDRAM-Readout und Argmax auf dem FPGA, 1 Mbaud) | `snn_full.fs`, Ausweichvariante `snn_full_115200.fs` | Simulation bitgenau, Timing erfüllt. **Erster Board-Test (25.10.2026):** 1 Mbaud, Laden (5,9 s) und Einzelzugriffe fehlerfrei, aber alle Logits falsch, Verdacht SDRAM-Leselatenz im Burst. Seither ist die Latenz per UART einstellbar und wird automatisch kalibriert. Nächster Test steht aus |
+| **Vollversion** (54 MHz, SDRAM-Readout und Argmax auf dem FPGA, 1 Mbaud) | `snn_full.fs`, Ausweichvariante `snn_full_115200.fs` | **Auf dem Board bestätigt (25.10.2026, v3):** 10/10 Proben, alle 6.920 Logits und Klassen bitgenau, 66 ms pro Probe inkl. UART-Antwort, Laden von `w_out` 6,0 s. SDRAM-Abtastung nach 2,5 Takten (fallende Flanke) |
 
 | Datei | Inhalt |
 |---|---|
@@ -110,7 +110,16 @@ Takt früher als im Modell angenommen.
 
 Deshalb gibt es jetzt:
 - **Einstellbarkeit zur Laufzeit:** Latenz 2…7 plus Abtastung auf der **fallenden Flanke**, also einen halben Takt früher (Befehl `L`)
-- **Kalibrierung:** `board_test.py` und `nose_bridge.py` prüfen nach dem Laden alle Zeitpunkte von 1,5 bis 7,0 Takten in halben Takten mit echten Bursts (Befehl `B`) und nehmen die Mitte des längsten fehlerfreien Bereichs. Erwartet ist für das Board die Abtastung nach 2,5 Takten (fallende Flanke)
+- **Kalibrierung:** `board_test.py` und `nose_bridge.py` prüfen nach dem Laden alle Zeitpunkte von 1,5 bis 7,0 Takten in halben Takten mit echten Bursts (Befehl `B`) und nehmen die Mitte des längsten fehlerfreien Bereichs. Gemessen (v3):
+
+| Abtastung nach | 1,5 | 2,0 | **2,5 (fallend)** | 3,0 … 7,0 |
+|---|---|---|---|---|
+| falsche Burst-Wörter von 200 | 200 | 161 | **0** | 198 |
+
+Das fehlerfreie Fenster ist nur einen halben Takt breit, nach links und rechts gibt es also wenig
+Reserve. Die Kalibrierung beim Start fängt Temperatur- und Exemplarstreuung ab. Ab dem nächsten
+Build ist 2,5 Takte der Startwert. Mehr Reserve brächte eine feinere Phasenverschiebung des
+SDRAM-Takts über den zweiten PLL-Ausgang
 
 Diagnosebefehle der Vollversion:
 
@@ -190,7 +199,7 @@ Das SDRAM behält die Gewichte, bis der Strom weg ist. Danach `--skip-load` wegl
 ## 8. Nächste Schritte
 
 1. ~~Bring-up auf dem Board bestätigen~~ erledigt: 10/10 Proben bitgenau
-2. Vollversion auf dem Board testen (`--mode full`), insbesondere SDRAM-Lesetiming und Baudrate
+2. ~~Vollversion auf dem Board testen~~ erledigt: 10/10 Proben bitgenau, 66 ms
 3. Eigene Gerüche: Aufnahme, Neutraining, Live-Betrieb, siehe [SENSORIK.md](SENSORIK.md)
 4. `w_out` beim Einschalten aus dem SPI-Flash statt per UART laden
 
