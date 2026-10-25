@@ -280,15 +280,15 @@ the underlying DoOR data are licensed CC BY-SA 4.0, and FlyWire's terms of use a
 
 ## References
 
-Entries 1–3 are taken from the model card; the others were compiled from memory and must be checked
-before submission.
+All entries were checked against publisher, PubMed/PMC, NSF, Zenodo and project records on
+25 October 2026; entry 3 is the model page as provided by the model author.
 
-1. Dorkenwald, S. et al. (2024). Neuronal wiring diagram of an adult brain. *Nature* 634, 124–138. [doi:10.1038/s41586-024-07558-y](https://doi.org/10.1038/s41586-024-07558-y)
+1. Dorkenwald, S. et al. (2024). Neuronal wiring diagram of an adult brain. *Nature* 634(8032), 124–138. [doi:10.1038/s41586-024-07558-y](https://doi.org/10.1038/s41586-024-07558-y)
 2. Münch, D. & Galizia, C. G. (2016). DoOR 2.0 – Comprehensive mapping of *Drosophila melanogaster* odorant responses. *Scientific Reports* 6, 21841. [doi:10.1038/srep21841](https://doi.org/10.1038/srep21841)
 3. Vick-MIRE. flywire-olfactory-snn (MaskedRecurrentLIFSNN). Hugging Face. [huggingface.co/Vick-MIRE/flywire-olfactory-snn](https://huggingface.co/Vick-MIRE/flywire-olfactory-snn)
-4. Pehle, C. & Pedersen, J. E. Norse – A deep learning library for spiking neural networks. [github.com/norse/norse](https://github.com/norse/norse)
-5. Zenke, F. & Ganguli, S. (2018). SuperSpike: Supervised learning in multilayer spiking neural networks. *Neural Computation* 30(6), 1514–1541.
-6. Neftci, E. O., Mostafa, H. & Zenke, F. (2019). Surrogate gradient learning in spiking neural networks. *IEEE Signal Processing Magazine* 36(6), 51–63.
-7. Wolf, C. Yosys Open SYnthesis Suite. [github.com/YosysHQ/yosys](https://github.com/YosysHQ/yosys)
-8. nextpnr – portable FPGA place and route tool (himbaechel/gowin). [github.com/YosysHQ/nextpnr](https://github.com/YosysHQ/nextpnr)
-9. Apicula – Gowin FPGA bitstream format documentation and tools. [github.com/YosysHQ/apicula](https://github.com/YosysHQ/apicula)
+4. Pehle, C. & Pedersen, J. E. (2021). Norse – A deep learning library for spiking neural networks (version 0.0.7). Zenodo. [doi:10.5281/zenodo.4422025](https://doi.org/10.5281/zenodo.4422025)
+5. Zenke, F. & Ganguli, S. (2018). SuperSpike: Supervised learning in multilayer spiking neural networks. *Neural Computation* 30(6), 1514–1541. [doi:10.1162/neco_a_01086](https://doi.org/10.1162/neco_a_01086)
+6. Neftci, E. O., Mostafa, H. & Zenke, F. (2019). Surrogate gradient learning in spiking neural networks: Bringing the power of gradient-based optimization to spiking neural networks. *IEEE Signal Processing Magazine* 36(6), 51–63. [doi:10.1109/MSP.2019.2931595](https://doi.org/10.1109/MSP.2019.2931595)
+7. Wolf, C. X. (formerly C. Wolf). Yosys Open SYnthesis Suite. [yosyshq.net/yosys](https://yosyshq.net/yosys/)
+8. YosysHQ. nextpnr – portable FPGA place and route tool (himbaechel architecture, Gowin target). [github.com/YosysHQ/nextpnr](https://github.com/YosysHQ/nextpnr)
+9. Project Apicula. Documentation and open-source tools for the Gowin FPGA bitstream format. [github.com/YosysHQ/apicula](https://github.com/YosysHQ/apicula)
