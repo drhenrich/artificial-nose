@@ -24,7 +24,7 @@ DT, TAU_MEM_INV, TAU_SYN_INV = 1e-3, 100.0, 200.0
 V_LEAK, V_TH, V_RESET = 0.0, 1.0, 0.0
 
 # Fixpunkt-Format
-FRAC = 10                      # Standard: v, i in Q5.10 (int16), V_TH = 1.0 = 1024; per --frac aenderbar
+FRAC = 7                       # Standard: v, i in Q8.7 (int16), V_TH = 1.0 = 128; per --frac aenderbar
 R_FRAC = 8                     # Eingangsrate r in Q0.8, 0..256 (256 = 1.0)
 K_MEM = round(DT * TAU_MEM_INV * 2 ** 16)   # 6554  (0.1 in Q0.16)
 K_SYN = round(DT * TAU_SYN_INV * 2 ** 16)   # 13107 (0.2 in Q0.16)
@@ -219,7 +219,7 @@ def main():
     ap.add_argument("--n", type=int, default=200, help="Anzahl Proben (Zufall oder erste n aus --data)")
     ap.add_argument("--runs", type=int, default=5, help="Monte-Carlo-Laeufe pro Probe")
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--frac", type=int, default=FRAC, help="Nachkommabits von v/i (10 = Q5.10)")
+    ap.add_argument("--frac", type=int, default=FRAC, help="Nachkommabits von v/i (7 = Q8.7)")
     ap.add_argument("--dump", help="Testvektoren fuer die HDL-Simulation als npz schreiben")
     args = ap.parse_args()
 

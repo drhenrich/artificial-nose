@@ -5,6 +5,10 @@ Das veröffentlichte Modell (800 Neuronen, 14.998 Synapsen, 692 Klassen) passt v
 (541 KiB) im eingebetteten 64-Mbit-SDRAM. Damit läuft das Gesamtmodell ohne Ring und ohne
 Synchronisation zwischen Boards.
 
+Zahlen aus dem echten Modell (`export_variant_e.py` auf `model.safetensors`): Zustandsformat
+Q8.7, Shifts `SH_IN = 5`, `SH_REC = −2`, Bitbreiten `acc_in` 19, `acc_rec` 11, Strom 14,
+Readout-Akkumulator 18 Bit.
+
 Die Rechenvorschrift ist dieselbe wie in allen Varianten: `fixed_forward()` in
 [`tools/snn_ref.py`](tools/snn_ref.py), Formate in [KONZEPT.md, Abschnitt 4.5](KONZEPT.md).
 Variante E legt nur fest, *wie* ein einzelner Chip das abarbeitet.
@@ -34,13 +38,13 @@ echten Modells (Gowin-BSRAM: 46 Blöcke à 18 Kbit, Konfiguration 1K×18 / 2K×9
 
 | Speicher | Inhalt | Format | Blöcke |
 |---|---|---|---|
-| `syn` | 14.998 Synapsen, nach präsynaptischem Neuron sortiert | 18 Bit `{post[17:8], w[7:0]}`, passt genau in 1K×18 | 15 |
+| `syn` | 9.534 Synapsen ≠ 0 nach INT8-Rundung (von 14.998), nach präsynaptischem Neuron sortiert | 18 Bit `{post[17:8], w[7:0]}`, passt genau in 1K×18 | 10 (15 bei allen Kanten) |
 | `ptr` | 801 Startadressen | 14 Bit | 1 |
 | `w_in` | 800 × 52 Gewichte | 18 Bit = 2 × int8 (Bits 16:9 und 7:0), 26 Wörter pro Neuron | 21 |
 | `acc_rec` | rekurrenter Akkumulator je Neuron | 16 Bit | 1 |
 | `v`, `i_syn` | Zustände | je 16 Bit | 2 |
 | `counts` | Spikezähler, 4 pro Wort | 4 × 7 Bit (0–100) | 1 |
-| **Summe** | | | **41 von 46** |
+| **Summe** | | | **36 von 46** (41 bei allen Kanten) |
 | SDRAM | `w_out` klassenweise (800 Byte pro Klasse) + `b_out` | int8 / int32 | 544 KiB von 8 MiB |
 
 Spike-Vektoren `s_prev`/`s_curr` (je 800 Bit) und die 52 Eingangsspikes liegen in Registern oder

@@ -94,8 +94,8 @@ localparam T_STEPS = {snn_ref.T_STEPS};
 localparam N_RUNS  = {q.runs};
 localparam FRAC    = {q.frac};
 localparam R_FRAC  = {snn_ref.R_FRAC};
-localparam SH_IN   = {q.s_in + snn_ref.R_FRAC - q.frac};   // acc_in  -> Q5.10
-localparam SH_REC  = {q.s_rec - q.frac};   // acc_rec -> Q5.10
+localparam SH_IN   = {q.s_in + snn_ref.R_FRAC - q.frac};   // acc_in  -> Zustandsformat
+localparam SH_REC  = {q.s_rec - q.frac};   // acc_rec -> Zustandsformat (negativ = Links-Shift)
 localparam K_MEM   = {snn_ref.K_MEM};
 localparam K_SYN   = {snn_ref.K_SYN};
 localparam V_TH    = {1 << q.frac};

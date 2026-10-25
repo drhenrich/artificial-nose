@@ -41,6 +41,25 @@ x (52 DoOR-Rezeptorwerte, standardisiert)
 | Daten | DoOR 2.0 (CC BY-SA 4.0), **692 Odorant-Klassen** (laut `config.json`, die Model Card nennt veraltet 500) | Siehe Lizenz-Risiko in Abschnitt 10 |
 | Genauigkeit | Test 47,6 %, Validierung 47,7 % (Checkpoint fold 0, seed 1010, Abbruch nach Epoche 28). Zufall wäre 0,14 % | Referenzwert für Phase 1: Die Fixpunkt-Version soll auf demselben Split ≤ 2 Prozentpunkte darunter liegen |
 
+### Messungen am veröffentlichten Modell
+
+Mit `model.safetensors` und `connectome_mask.npz` aus dem Hugging-Face-Repo; Eingaben 300
+Zufallsvektoren (randn), 5 Monte-Carlo-Läufe. DoOR-Testdaten fehlen noch, deshalb noch keine
+Genauigkeit gegen echte Labels.
+
+| Messung | Ergebnis | Folge |
+|---|---|---|
+| `verify_torch.py` (Norse 1.1.0) | max. Logit-Abweichung 5·10⁻⁶, Argmax 100 % gleich | Float-Referenz bildet das Original exakt nach |
+| Effektive rekurrente Gewichte | \|w\| bis 3,74, Mittel 0,32 (Schwelle 1,0) | Einzelne Synapsen können ein Neuron allein auslösen |
+| Vorzeichen gegen das Konnektom gekippt | **6.905 von 14.998 (46 %)**, nur 105 von 800 Neuronen Dale-konform | Biologisch fixiert ist nur die Topologie; Vorzeichen pro Synapse speichern |
+| Fan-in / Fan-out | 0…173 / 0…87, Mittel 18,7 | Einige Neuronen ohne rekurrenten Eingang |
+| Feuerrate | 5,8 % pro Neuron und Schritt, 74 % der Neuronen in einer Probe stumm | Passt zur Annahme 5 % im Zeitbudget |
+| Zustandsformat | Q5.10: 805.248 Sättigungen von `i`; Q8.7: keine | **Standard Q8.7** (`v_th` = 128) |
+| Bitbreiten (Q8.7) | `acc_in` 19, `acc_rec` 11, `cur` 14, Readout-Akkumulator 18 Bit | Vorgaben für das RTL |
+| INT8 vs. Float, gleiche Eingangsspikes | Argmax 92 % gleich (INT9: 97 %, INT12: 99 %) | |
+| **Rauschen der Poisson-Kodierung** | Float gegen Float mit anderem Seed: nur **71 %** gleich; Float(5 Läufe) und INT8(5 Läufe) gegen Float(50 Läufe): beide **82 %** | Der Quantisierungsfehler verschwindet im Monte-Carlo-Rauschen. **Mehr Läufe bringen mehr als mehr Bits** (Argument für Variante F) |
+| INT8-Rundung auf 0 | 5.464 Synapsen (36 %) mit \|w\| < 0,016 fallen weg | Kaum Einfluss aufs Ergebnis, aber ein Drittel der Kanten fehlt in der Hardware. Wer die vollständige Topologie will: 9-Bit-Gewichte (Synapsenwort 36 Bit für 2 Synapsen) oder logarithmische Gewichtskodierung |
+
 ---
 
 ## 1. Korrekturen zur ursprünglichen KI-Antwort
@@ -198,7 +217,7 @@ Ablauf pro Zeitschritt *t*:
 
 - **Wichtig für Bitgenauigkeit:** Norse 1.1.0 addiert den Eingang zuerst auf den Strom und zerfällt ihn danach. Ältere Norse-Versionen rechnen `v` mit dem alten Strom. Ein Kern in der falschen Reihenfolge liegt einen Zeitschritt daneben (gemessen: Logit-Abweichung 7·10⁻², 16 % anderes Argmax). `verify_torch.py` deckt das auf.
 - Die Norse-Standardwerte 0,1 und 0,2 (im Code bestätigt) sind keine Zweierpotenzen. Statt das Netz für Shift-Leaks neu zu trainieren, multipliziert der Kern mit Q0.16-Konstanten. Ein zeitmultiplexter Kern braucht dafür 2 der 48 Multiplizierer, so bleiben die vortrainierten Gewichte direkt nutzbar.
-- Fixpunkt: Potentiale und Ströme INT16 mit Sättigung, Standard Q5.10 (`v_th` = 1024). Meldet `snn_ref.py` Sättigungen, auf Q6.9 (`--frac 9`) wechseln. Gewichte INT8 mit einer Zweierpotenz-Skala pro Tensor. Die Umrechnung ins Zustandsformat ist dann ein Shift.
+- Fixpunkt: Potentiale und Ströme INT16 mit Sättigung, Standard Q8.7 (`v_th` = 128); beim echten Modell sättigt Q5.10 massiv (siehe Messungen in Abschnitt 0). Gewichte INT8 mit einer Zweierpotenz-Skala pro Tensor. Die Umrechnung ins Zustandsformat ist dann ein Shift.
 - Vorzeichen: Weil `recurrent` nicht auf ≥ 0 beschränkt ist, wird das effektive Vorzeichen **pro Synapse** gespeichert. Zeigt das Skript bei den echten Gewichten 0 % gekippte Vorzeichen und Dale-Konformität, reicht ein Vorzeichen pro präsynaptischem Neuron, und die Synapsen bekommen eine Bitstufe mehr Auflösung.
 - **Poisson-Eingang:** Ein LFSR pro Kanal auf B0 setzt pro Zeitschritt `e[k] = (rand9 < r_k + r_k/128)` (9-Bit-Vergleich, damit `r = 255` sicher immer feuert). Für die 5 Monte-Carlo-Durchläufe startet das LFSR mit verschiedenen Seeds. `r[52]` geht einmal pro Inferenz per Steuerframe an alle Boards.
 - **Verifikation:** `torch.bernoulli` lässt sich in Hardware nicht bitgleich nachbauen. Für den Bitvergleich gibt es deshalb einen Testmodus, in dem B0 eine aus Python exportierte Folge `e_t` abspielt. Mit LFSR wird statistisch verglichen (Genauigkeit über viele Proben).
@@ -237,11 +256,11 @@ entspricht einer Hardware-Operation:
 
 | Größe | Format | Bemerkung |
 |---|---|---|
-| `v`, `i_syn` | int16, Standard Q5.10 (1,0 = 1024), Sättigung; `--frac` wählt das Format | `V_TH` = 2^frac, Reset auf 0 |
+| `v`, `i_syn` | int16, Standard Q8.7 (1,0 = 128), Sättigung; `--frac` wählt das Format | `V_TH` = 2^frac, Reset auf 0 |
 | Rate `r` | Q0.8, 0…256 (256 = 1,0) | MCU liefert Min-Max-normierte Werte |
 | Eingangsspike | `xorshift32`, `e = (x[31:24] < r)` | Pro Inferenz ein Generator, Reihenfolge Lauf → Schritt → Kanal, Seed pro Lauf `seed + m·0x9E3779B9` |
 | `W_in`, `W_rec`, `W_out` | int8 mit Zweierpotenz-Skala `2^-s` pro Tensor | Skala aus `max|w|` |
-| Akkumulatoren | `acc_in = Σ e·r·W_in`, `acc_rec = Σ spk·W_rec` | Getrennt, danach je ein Rundungs-Shift nach Q5.10 (Halbe aufwärts) |
+| Akkumulatoren | `acc_in = Σ e·r·W_in`, `acc_rec = Σ spk·W_rec` | Getrennt, danach je ein Rundungs-Shift ins Zustandsformat (Halbe aufwärts; beim echten Modell ist der rekurrente Shift negativ, also ein Links-Shift) |
 | LIF | `i_new = sat(i + cur)`, `v_dec = sat(v + mulq16(K_MEM, i_new − v))`, `i = i_new − mulq16(K_SYN, i_new)` | `mulq16(K, x) = (K·x + 2^15) >> 16`, K_MEM = 6554, K_SYN = 13107 |
 | Readout | `counts · W_out_q + b_q` (int32) | `b_q = b · 2^s_out · 20 · M`, Argmax direkt auf den Integern |
 
@@ -340,7 +359,7 @@ openFPGALoader -b tangnano20k  (10 Boards über USB-Hub, per Seriennummer adress
 | B – Stereo-Riechen | 2 Sensorköpfe links/rechts, 2 Netzinstanzen à 4 Boards (200 Neuronen/Board), B0 und B9 gemeinsam | Fliegen vergleichen beide Antennen und erkennen so die Richtung. Das Links/Rechts-Signal steuert direkt die Drehrate |
 | C – Redundanz | 3 Instanzen à 3 Boards + 1 Voter | Mehrheitsentscheid gegen Störungen (Vibration, EMV), Ensemble über verschiedene Seeds |
 | D – Größeres Konnektom | alle 10 Boards als Neuronen-Boards, bis ~3.000 Neuronen mit SDRAM | Wenn später ein größerer FlyWire-Ausschnitt (z. B. alle ≈ 2.000 Kenyonzellen) genutzt werden soll |
-| **E – Ein Board (empfohlen)** | alle 800 Neuronen auf einem Board, 41 von 46 BSRAM-Blöcken, `w_out` im eingebetteten SDRAM. **Ausgearbeitet in [VARIANTE-E.md](VARIANTE-E.md)** | Kein Ring, keine Synchronisation. ≈ 24 ms pro Klassifikation (≈ 40/s), weit schneller als die Sensoren |
+| **E – Ein Board (empfohlen)** | alle 800 Neuronen auf einem Board, 36 von 46 BSRAM-Blöcken (echtes Modell, INT8), `w_out` im eingebetteten SDRAM. **Ausgearbeitet in [VARIANTE-E.md](VARIANTE-E.md)** | Kein Ring, keine Synchronisation. ≈ 24 ms pro Klassifikation (≈ 40/s), weit schneller als die Sensoren |
 | **F – E-Cluster** | bis zu 10 unabhängige Kopien von E an einem SPI-Bus | Parallele Monte-Carlo-Läufe (≈ 5 ms), Stereo oder Redundanz, ohne Ring |
 
 **Empfehlung (aktualisiert):** Mit den echten Modelldaten (2,34 % Dichte) ist **E** die
