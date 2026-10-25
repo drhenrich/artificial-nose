@@ -15,11 +15,13 @@ Kenyonzellen.
 | Bitgenaues Fixpunkt-Modell | 9-Bit-Gewichte, Q8.7-Zustände; Argmax 96 % gleich wie Float bei gleichen Eingangsspikes |
 | Verilog-Kern (Variante E: ganzes Modell auf einem Board) | Verilator: 2.000 Zeitschritte, alle Spikes und Logits bitgenau |
 | Bitstream (yosys + nextpnr-himbaechel + apycula) | 21 % LUT, 37 von 46 BSRAM, Fmax 58 MHz |
-| **Test auf dem Tang Nano 20K** | **10 von 10 Proben bitgenau (8.000 Spikezähler), 187 ms pro Probe** |
-| Readout (692 Klassen) auf dem FPGA mit SDRAM | in Simulation verifiziert, SDRAM-Controller in Arbeit |
-| Beschleunigung (≈ 112 → 20–30 ms), Anbindung der Gassensoren, Neutraining | in Arbeit |
+| **Test auf dem Tang Nano 20K (Bring-up)** | **10 von 10 Proben bitgenau (8.000 Spikezähler), 187 ms pro Probe** |
+| Schnellerer Kern (beide Synapsenhälften parallel, 4 Eingangsgewichte/Takt, Pipeline) | 112 → **31,8 ms** pro Klassifikation (54 MHz), Simulation bitgenau |
+| SDRAM-Controller, Readout und Argmax auf dem FPGA, Vollversion mit UART-Befehlen | Simulation bitgenau (mit SDRAM-Modell), Bitstream gebaut, Timing erfüllt; Board-Test steht aus |
+| Gassensoren (Wio Terminal), Neutraining, Live-Bridge mit ROS 2 | Kette mit synthetischen Daten geprüft, siehe [SENSORIK.md](SENSORIK.md) |
 
 Details zu Variante E, Speicherplan, Zeitbudget und Inbetriebnahme: [VARIANTE-E.md](VARIANTE-E.md).
+Eigene Gerüche aufnehmen, neu trainieren und live erkennen: [SENSORIK.md](SENSORIK.md).
 
 ## Schnellstart
 
@@ -34,13 +36,13 @@ python3 snn-fpga/tools/snn_ref.py       flywire-snn/model.safetensors flywire-sn
 # Speicherabbilder + Testvektoren, Simulation, Bitstream
 python3 snn-fpga/tools/export_variant_e.py flywire-snn/model.safetensors flywire-snn/connectome_mask.npz --out build/e
 snn-fpga/rtl/sim.sh   build/e            # Verilator: PASS erwartet
-snn-fpga/rtl/build.sh build/e            # -> build/e/snn_tangnano20k.fs
+snn-fpga/rtl/build.sh build/e full       # -> build/e/snn_full.fs (54 MHz, SDRAM, 1 Mbaud)
 
-# Auf dem Board testen
-openFPGALoader -b tangnano20k build/e/snn_tangnano20k.fs
+# Auf dem Board testen (lädt w_out ins SDRAM, vergleicht alle Logits bitgenau)
+openFPGALoader -b tangnano20k build/e/snn_full.fs
 pip install pyserial numpy
 python3 snn-fpga/tools/board_test.py flywire-snn/model.safetensors flywire-snn/connectome_mask.npz \
-        --port /dev/cu.usbserial-XXXX1 --n 10      # Linux: /dev/ttyUSB1, Windows: COMx
+        --port /dev/cu.usbserial-XXXX1 --mode full --n 10   # Linux: /dev/ttyUSB1, Windows: COMx
 ```
 
 ## Aufbau
@@ -49,19 +51,26 @@ python3 snn-fpga/tools/board_test.py flywire-snn/model.safetensors flywire-snn/c
 snn-fpga/
 ├── KONZEPT.md               Gesamtkonzept: Modell, Messungen, Varianten A–F, Sensorik, Lite3
 ├── VARIANTE-E.md            Ein-Board-Variante: Formate, Speicherplan, Ablauf, Inbetriebnahme
+├── SENSORIK.md              Eigene Gerüche: Aufnahme, Neutraining, Live-Betrieb, ROS 2
 ├── tools/
 │   ├── inspect_model.py     Tensoren, Sparsity, Vorzeichen, BSRAM-Budget
 │   ├── snn_ref.py           Float- und bitgenaues Fixpunkt-Modell (Spezifikation für die HDL)
 │   ├── verify_torch.py      Float-Referenz gegen modeling_snn.py + Norse
 │   ├── export_variant_e.py  Speicherabbilder (*.hex), params.vh, Testvektoren
-│   └── board_test.py        Test auf dem Board über USB-UART
+│   ├── board_test.py        Test auf dem Board über USB-UART (full / counts)
+│   ├── sensor_features.py   52 Merkmale + Intensität aus dem Grove-Gassensor
+│   ├── record_sensors.py    Aufnahmen vom Wio Terminal
+│   ├── train_sensor_snn.py  Neutraining (Konnektom eingefroren), Fixpunkt-Bewertung
+│   └── nose_bridge.py       Live: Sensor -> FPGA -> Geruch (JSON / ROS 2)
 └── rtl/
     ├── snn_core.v           SNN-Kern (LIF wie Norse 1.1.0, Readout bzw. Zählerausgabe)
-    ├── top_tangnano20k.v    Bring-up-Top: UART, LEDs
+    ├── sdram_ctrl.v         Controller für das eingebettete SDRAM
+    ├── top_tangnano20k_full.v  Vollversion: PLL 54 MHz, SDRAM, UART-Befehle W/R/C
+    ├── top_tangnano20k.v    Bring-up-Top: Zählerausgabe
     ├── uart.v, tangnano20k.cst
-    ├── tb/                  Testbenches (Kern mit SDRAM-Modell, Top über UART)
+    ├── tb/                  Testbenches (Kern, SDRAM mit Modell, beide Tops über UART)
     ├── sim.sh               Simulation (Verilator oder iverilog)
-    └── build.sh             Bitstream (OSS CAD Suite)
+    └── build.sh             Bitstream (OSS CAD Suite), Varianten full / bringup
 ```
 
 ## Wichtige Befunde

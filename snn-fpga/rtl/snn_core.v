@@ -6,11 +6,12 @@
 // Ablauf einer Inferenz (start):
 //   fuer jeden Monte-Carlo-Lauf m < N_RUNS, jeden Schritt t < T_STEPS:
 //     S_GEN    52 Eingangsspikes aus xorshift32:  e[k] = x[31:24] < r[k]
-//     je Neuron i (sammelnd, "gather"):
-//       S_N0..3  Listenanfaenge ptr[2i], ptr[2i+1], ptr[2i+2] lesen
-//       S_MAC    parallel: acc_in += e*r*w_in (2 Gewichte/Takt), acc_rec += s_prev[pre]*w_rec
+//     je Neuron i (sammelnd, "gather"), max(13, Fan-in je Haelfte) + 5 Takte:
+//       S_MAC    parallel: acc_in  += e*r*w_in  (4 Gewichte/Takt aus win0/win1)
+//                          acc_rec += s_prev[pre]*w_rec (je 1 Synapse/Takt aus syn0 und syn1)
+//                Listenenden des naechsten Neurons werden waehrenddessen aus pp gelesen
 //       S_LIF1/2 LIF-Update wie Norse 1.1.0 (Eingang zuerst), Zustaende und Zaehler schreiben
-//   S_RO_*   Readout klassenweise: logit[c] = b[c] + sum_i counts[i]*w_out[c,i], Argmax
+//   S_RO*    Readout klassenweise: logit[c] = b[c] + sum_i counts[i]*w_out[c,i], Argmax
 //
 // w_out liegt extern (SDRAM): pro Klasse ein Burst von N_HID/4 32-Bit-Woertern ab wout_addr,
 // Daten kommen in Reihenfolge mit wout_valid (Luecken erlaubt).
@@ -52,26 +53,29 @@ module snn_core #(
 
 `include "params.vh"
 
-    localparam N_WIN  = N_IN / 2;          // 18-Bit-Woerter w_in pro Neuron
+    localparam N_WQ   = N_IN / 4;          // w_in-Takte pro Neuron
     localparam N_WOUT = N_HID / 4;         // 32-Bit-Woerter w_out pro Klasse
-    localparam N_PTR  = 2 * N_HID + 1;
     localparam signed [15:0] KM = K_MEM;
     localparam signed [15:0] KS = K_SYN;
     localparam [31:0] GOLDEN = 32'h9E3779B9;
 
     // ------------------------------------------------------------ Speicher (BSRAM)
-    reg [13:0] ptr_mem [0:N_PTR-1];
-    reg [17:0] syn_mem [0:N_SYN-1];
-    reg [17:0] win_mem [0:N_HID*N_WIN-1];
+    reg [27:0] pp_mem  [0:N_HID];
+    reg [17:0] syn0_mem[0:N_SYN0-1];
+    reg [17:0] syn1_mem[0:N_SYN1-1];
+    reg [17:0] win0_mem[0:N_HID*N_WQ-1];
+    reg [17:0] win1_mem[0:N_HID*N_WQ-1];
     reg [31:0] bout_mem[0:N_CLS-1];
     reg signed [15:0] v_mem [0:N_HID-1];
     reg signed [15:0] i_mem [0:N_HID-1];
     reg [27:0] cnt_mem [0:N_HID/4-1];      // 4 Zaehler a 7 Bit pro Wort
 
     initial begin
-        $readmemh({MEM_DIR, "ptr.hex"},   ptr_mem);
-        $readmemh({MEM_DIR, "syn.hex"},   syn_mem);
-        $readmemh({MEM_DIR, "w_in.hex"},  win_mem);
+        $readmemh({MEM_DIR, "pp.hex"},    pp_mem);
+        $readmemh({MEM_DIR, "syn0.hex"},  syn0_mem);
+        $readmemh({MEM_DIR, "syn1.hex"},  syn1_mem);
+        $readmemh({MEM_DIR, "win0.hex"},  win0_mem);
+        $readmemh({MEM_DIR, "win1.hex"},  win1_mem);
         $readmemh({MEM_DIR, "b_out.hex"}, bout_mem);
     end
 
@@ -79,9 +83,8 @@ module snn_core #(
     reg  [N_IN-1:0] e;
 
     // ------------------------------------------------------------ Zustand
-    localparam S_IDLE = 4'd0, S_GEN = 4'd1, S_N0 = 4'd2, S_N1 = 4'd3, S_N2 = 4'd4, S_N3 = 4'd5,
-               S_MAC = 4'd6, S_LIF1 = 4'd7, S_LIF2 = 4'd8, S_STEP = 4'd9, S_RUN = 4'd10,
-               S_RO0 = 4'd11, S_RO1 = 4'd12, S_RO2 = 4'd13, S_CO = 4'd14;
+    localparam S_IDLE = 4'd0, S_GEN = 4'd1, S_MAC = 4'd2, S_LIF1 = 4'd3, S_LIF2 = 4'd4,
+               S_STEP = 4'd5, S_RUN = 4'd6, S_RO0 = 4'd7, S_RO1 = 4'd8, S_RO2 = 4'd9, S_CO = 4'd10;
     reg [3:0]  state;
 
     reg [31:0] x, run_seed;
@@ -92,39 +95,41 @@ module snn_core #(
     reg [N_HID-1:0] s_prev, s_cur;
     assign step_spikes = s_prev;
 
-    reg [13:0] p0, p1, p2, a_iss, a_d;
-    reg [4:0]  c_iss, c_d;
-    reg        win_v, syn_v;
+    reg [13:0] a0, a1, e0, e1;             // Synapsenbereiche [a, e) in syn0/syn1
+    reg [3:0]  c_iss, c_d;
+    reg        win_v, s0_v, s1_v, p_v;
     reg [14:0] win_base;
-    reg signed [23:0] acc_in;
+    reg signed [23:0] acc_in, psum_in;
     reg signed [19:0] acc_rec;
+    reg signed [10:0] psum_rec;
     reg signed [15:0] i_new_r;
     reg signed [16:0] dv_r;
 
     reg [9:0]  cls_i;                      // Readout-Klasse
     reg [7:0]  jcnt, jmac;
     reg [31:0] wd_r;
-    reg        wv_r;
-    reg signed [31:0] acc_o;
+    reg        wv_r, macv;
+    reg signed [31:0] acc_o, macr;
     reg        co_v;
     reg [7:0]  co_idx;
 
     // ------------------------------------------------------------ Leseports (1 Takt Latenz)
     wire        in_ro     = (state == S_RO0) || (state == S_RO1) || (state == S_RO2) || (state == S_CO);
-    wire [13:0] ptr_raddr = (state == S_N0) ? {ni, 1'b0} :
-                            (state == S_N1) ? {ni, 1'b0} + 14'd1 : {ni, 1'b0} + 14'd2;
+    wire [9:0]  pp_raddr  = (state == S_GEN) ? 10'd1 : ni + 10'd2;   // Ende des naechsten Neurons
     wire [14:0] win_raddr = win_base + c_iss;
     wire [7:0]  cnt_raddr = in_ro ? jcnt : ni[9:2];
-    reg  [13:0] ptr_q;
-    reg  [17:0] syn_q, win_q;
+    reg  [27:0] pp_q;
+    reg  [17:0] syn0_q, syn1_q, win0_q, win1_q;
     reg  signed [15:0] v_q, i_q;
     reg  [27:0] cnt_q;
     reg  [31:0] bout_q;
 
     always @(posedge clk) begin
-        ptr_q  <= ptr_mem[ptr_raddr];
-        syn_q  <= syn_mem[a_iss];
-        win_q  <= win_mem[win_raddr];
+        pp_q   <= pp_mem[pp_raddr];
+        syn0_q <= syn0_mem[a0];
+        syn1_q <= syn1_mem[a1];
+        win0_q <= win0_mem[win_raddr];
+        win1_q <= win1_mem[win_raddr];
         v_q    <= v_mem[ni];
         i_q    <= i_mem[ni];
         cnt_q  <= cnt_mem[cnt_raddr];
@@ -136,19 +141,20 @@ module snn_core #(
     wire [31:0] x2 = x1 ^ (x1 >> 17);
     wire [31:0] xn = x2 ^ (x2 << 5);
 
-    // ------------------------------------------------------------ MAC-Pfade
-    wire [5:0]  k0 = {c_d, 1'b0};
-    wire [5:0]  k1 = {c_d, 1'b1};
-    wire signed [8:0]  w0 = win_q[8:0];
-    wire signed [8:0]  w1 = win_q[17:9];
-    wire signed [9:0]  r0 = {1'b0, r_reg[k0]};
-    wire signed [9:0]  r1 = {1'b0, r_reg[k1]};
-    wire signed [18:0] m0 = e[k0] ? w0 * r0 : 19'sd0;
-    wire signed [18:0] m1 = e[k1] ? w1 * r1 : 19'sd0;
+    // ------------------------------------------------------------ MAC-Pfade (Stufe 1: Produkte)
+    wire [5:0] kb = {c_d, 2'b00};
+    function signed [18:0] in_term(input en, input [8:0] w, input [8:0] r);
+        in_term = en ? $signed(w) * $signed({1'b0, r}) : 19'sd0;
+    endfunction
+    wire signed [18:0] m0 = in_term(e[kb],      win0_q[8:0],  r_reg[kb]);
+    wire signed [18:0] m1 = in_term(e[kb + 1],  win0_q[17:9], r_reg[kb + 1]);
+    wire signed [18:0] m2 = in_term(e[kb + 2],  win1_q[8:0],  r_reg[kb + 2]);
+    wire signed [18:0] m3 = in_term(e[kb + 3],  win1_q[17:9], r_reg[kb + 3]);
 
-    wire        half = (a_d >= p1);
-    wire [9:0]  pre  = half ? HALF + syn_q[17:9] : {1'b0, syn_q[17:9]};
-    wire signed [8:0] wr = syn_q[8:0];
+    wire [9:0]  pre0 = {1'b0, syn0_q[17:9]};
+    wire [9:0]  pre1 = HALF + syn1_q[17:9];
+    wire signed [8:0] wr0 = (s0_v && s_prev[pre0]) ? $signed(syn0_q[8:0]) : 9'sd0;
+    wire signed [8:0] wr1 = (s1_v && s_prev[pre1]) ? $signed(syn1_q[8:0]) : 9'sd0;
 
     // ------------------------------------------------------------ LIF (Norse 1.1.0)
     wire signed [23:0] cur_in, cur_rec;
@@ -229,45 +235,48 @@ module snn_core #(
                 state    <= S_GEN;
             end
 
-            S_GEN: begin
+            S_GEN: begin                       // pp_q = pp[1] liegt waehrenddessen an
                 x    <= xn;
                 e[k] <= (xn[31:24] < r_reg[k]);
                 k    <= k + 6'd1;
                 if (k == N_IN - 1) begin
                     ni       <= 10'd0;
                     win_base <= 15'd0;
-                    state    <= S_N0;
+                    a0       <= 14'd0;
+                    a1       <= 14'd0;
+                    e0       <= pp_q[13:0];
+                    e1       <= pp_q[27:14];
+                    c_iss    <= 4'd0;
+                    win_v    <= 1'b0;
+                    s0_v     <= 1'b0;
+                    s1_v     <= 1'b0;
+                    p_v      <= 1'b0;
+                    acc_in   <= 24'sd0;
+                    acc_rec  <= 20'sd0;
+                    state    <= S_MAC;
                 end
             end
 
-            S_N0: begin
-                acc_in  <= 24'sd0;
-                acc_rec <= 20'sd0;
-                state   <= S_N1;
-            end
-            S_N1: begin p0 <= ptr_q; state <= S_N2; end
-            S_N2: begin p1 <= ptr_q; state <= S_N3; end
-            S_N3: begin
-                p2    <= ptr_q;
-                a_iss <= p0;
-                c_iss <= 5'd0;
-                win_v <= 1'b0;
-                syn_v <= 1'b0;
-                state <= S_MAC;
-            end
-
             S_MAC: begin
-                win_v <= (c_iss < N_WIN);
+                // Ausgabe der Adressen (Daten im naechsten Takt)
+                win_v <= (c_iss < N_WQ);
                 c_d   <= c_iss;
-                if (c_iss < N_WIN) c_iss <= c_iss + 5'd1;
-                syn_v <= (a_iss < p2);
-                a_d   <= a_iss;
-                if (a_iss < p2) a_iss <= a_iss + 14'd1;
-
-                if (win_v) acc_in <= acc_in + m0 + m1;
-                if (syn_v && s_prev[pre]) acc_rec <= acc_rec + wr;
-
-                if (c_iss == N_WIN && a_iss >= p2 && !win_v && !syn_v) state <= S_LIF1;
+                if (c_iss < N_WQ) c_iss <= c_iss + 4'd1;
+                s0_v  <= (a0 < e0);
+                if (a0 < e0) a0 <= a0 + 14'd1;
+                s1_v  <= (a1 < e1);
+                if (a1 < e1) a1 <= a1 + 14'd1;
+                // Stufe 1: Produkte und Synapsentreffer
+                p_v      <= win_v || s0_v || s1_v;
+                psum_in  <= win_v ? m0 + m1 + m2 + m3 : 24'sd0;
+                psum_rec <= wr0 + wr1;
+                // Stufe 2: Akkumulieren
+                if (p_v) begin
+                    acc_in  <= acc_in + psum_in;
+                    acc_rec <= acc_rec + psum_rec;
+                end
+                if (c_iss == N_WQ && a0 >= e0 && a1 >= e1 && !win_v && !s0_v && !s1_v && !p_v)
+                    state <= S_LIF1;
             end
 
             S_LIF1: begin
@@ -277,15 +286,26 @@ module snn_core #(
             end
 
             S_LIF2: begin
-                v_mem[ni]          <= z ? 16'sd0 : v_dec;
-                i_mem[ni]          <= i_out;
-                cnt_mem[ni[9:2]]   <= cnt_new;
-                s_cur[ni]          <= z;
-                win_base           <= win_base + N_WIN;
+                v_mem[ni]        <= z ? 16'sd0 : v_dec;
+                i_mem[ni]        <= i_out;
+                cnt_mem[ni[9:2]] <= cnt_new;
+                s_cur[ni]        <= z;
                 if (ni == N_HID - 1) state <= S_STEP;
-                else begin
-                    ni    <= ni + 10'd1;
-                    state <= S_N0;
+                else begin                     // naechstes Neuron direkt starten
+                    ni       <= ni + 10'd1;
+                    win_base <= win_base + N_WQ;
+                    a0       <= e0;
+                    a1       <= e1;
+                    e0       <= pp_q[13:0];
+                    e1       <= pp_q[27:14];
+                    c_iss    <= 4'd0;
+                    win_v    <= 1'b0;
+                    s0_v     <= 1'b0;
+                    s1_v     <= 1'b0;
+                    p_v      <= 1'b0;
+                    acc_in   <= 24'sd0;
+                    acc_rec  <= 20'sd0;
+                    state    <= S_MAC;
                 end
             end
 
@@ -322,6 +342,7 @@ module snn_core #(
                 jcnt     <= 8'd0;
                 jmac     <= 8'd0;
                 wv_r     <= 1'b0;
+                macv     <= 1'b0;
                 acc_o    <= 32'sd0;
                 state    <= S_RO1;
             end
@@ -330,8 +351,10 @@ module snn_core #(
                 wv_r <= wout_valid;
                 wd_r <= wout_data;
                 if (wout_valid) jcnt <= jcnt + 8'd1;
-                if (wv_r) begin
-                    acc_o <= acc_o + mac4;
+                macv <= wv_r;                  // Stufe 1: 4 Produkte
+                macr <= mac4;
+                if (macv) begin                // Stufe 2: akkumulieren
+                    acc_o <= acc_o + macr;
                     jmac  <= jmac + 8'd1;
                     if (jmac == N_WOUT - 1) state <= S_RO2;
                 end

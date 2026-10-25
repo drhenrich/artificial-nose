@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Testet den Bring-up-Bitstream (rtl/top_tangnano20k.v) auf dem Tang Nano 20K ueber USB-UART.
-
-Schickt Eingaben an das Board, empfaengt die 800 Spikezaehler und vergleicht sie bitgenau mit
-snn_ref.fixed_forward. Den Readout (692 Klassen) rechnet der PC aus den Zaehlern.
+"""Testet die Bitstreams auf dem Tang Nano 20K ueber USB-UART gegen snn_ref.py.
 
     pip install pyserial numpy
-    python3 board_test.py model.safetensors connectome_mask.npz --port /dev/ttyUSB1 [--n 10]
+    # Vollversion (rtl/top_tangnano20k_full.v, snn_full.fs): Readout auf dem FPGA
+    python3 board_test.py model.safetensors connectome_mask.npz --port PORT --mode full
+    # Bring-up (rtl/top_tangnano20k.v, snn_tangnano20k.fs): Spikezaehler, Readout auf dem PC
+    python3 board_test.py model.safetensors connectome_mask.npz --port PORT --mode counts
 
-Port: Linux meist /dev/ttyUSB1 (ttyUSB0 ist JTAG), Windows COMx, macOS /dev/cu.usbserial-*.
-Die Parameter (--runs, --frac, Bitbreiten) muessen zu dem Export passen, aus dem der Bitstream
-gebaut wurde (Standardwerte = Standardwerte von export_variant_e.py).
+full:   laedt w_out ins SDRAM (Befehl 'W', mit Pruefsumme), liest Stichproben zurueck ('R') und
+        vergleicht danach Klasse und alle Logits jeder Probe bitgenau ('C').
+counts: vergleicht die 800 Spikezaehler bitgenau, der PC rechnet den Readout.
+
+Port: Linux meist /dev/ttyUSB1 (ttyUSB0 ist JTAG), macOS /dev/cu.usbserial-...1, Windows COMx.
+Baudrate: full 1000000 (oder 115200 fuer snn_full_115200.fs), counts 115200.
+Die Parameter (--runs, --frac) muessen zu dem Export passen, aus dem der Bitstream gebaut wurde.
 """
 import argparse
 import struct
@@ -20,19 +24,63 @@ import serial
 
 import snn_ref
 
+CHUNK = 1024          # Woerter pro 'W'-Frame
+
+
+def read_exact(ser, n):
+    data = ser.read(n)
+    if len(data) != n:
+        raise IOError(f"nur {len(data)} von {n} Bytes empfangen - Port, Baudrate und Bitstream pruefen")
+    return data
+
+
+def w_out_words(q):
+    k, h = q.w_out.shape
+    b = (q.w_out.astype(np.int64) & 0xFF).reshape(k, h // 4, 4)
+    return (b[..., 0] | b[..., 1] << 8 | b[..., 2] << 16 | b[..., 3] << 24).ravel().astype(np.uint32)
+
+
+def load_sdram(ser, words):
+    t0 = time.time()
+    for start in range(0, len(words), CHUNK):
+        chunk = words[start:start + CHUNK]
+        ser.write(bytes([0xA5]) + b"W" + struct.pack("<I", start)[:3] + struct.pack("<H", len(chunk))
+                  + chunk.astype("<u4").tobytes())
+        resp = read_exact(ser, 6)
+        expect = int(chunk.astype(np.uint64).sum()) & 0xFFFFFFFF
+        if resp[:2] != b"\x5aW" or struct.unpack("<I", resp[2:])[0] != expect:
+            raise IOError(f"Pruefsumme beim Laden ab Wort {start} falsch")
+        print(f"\rw_out laden: {start + len(chunk)}/{len(words)} Woerter", end="", flush=True)
+    print(f"  ({time.time() - t0:.1f} s)")
+
+
+def check_sdram(ser, words, n=8, seed=0):
+    rng = np.random.default_rng(seed)
+    errors = 0
+    for start in rng.integers(0, len(words) - 64, n):
+        ser.write(bytes([0xA5]) + b"R" + struct.pack("<I", int(start))[:3] + struct.pack("<H", 64))
+        resp = read_exact(ser, 2 + 4 * 64)
+        got = np.frombuffer(resp[2:], dtype="<u4")
+        errors += int((got != words[start:start + 64]).sum())
+    print(f"SDRAM-Ruecklesen: {n} x 64 Woerter, {errors} Fehler")
+    return errors == 0
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("weights")
     ap.add_argument("mask")
     ap.add_argument("--port", required=True)
-    ap.add_argument("--baud", type=int, default=115200)
+    ap.add_argument("--mode", choices=("full", "counts"), default="full")
+    ap.add_argument("--baud", type=int, help="Standard: full 1000000, counts 115200")
     ap.add_argument("--n", type=int, default=10)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--frac", type=int, default=snn_ref.FRAC)
+    ap.add_argument("--skip-load", action="store_true", help="w_out ist schon im SDRAM")
     ap.add_argument("--data", help="npz mit X (N x 52) und optional y (N,)")
     args = ap.parse_args()
+    baud = args.baud or (1_000_000 if args.mode == "full" else 115_200)
 
     p = snn_ref.load_params(args.weights, args.mask)
     q = snn_ref.quantize(p, args.runs, args.frac)
@@ -45,43 +93,61 @@ def main():
         y = None
     r_q = snn_ref.rate_quant(snn_ref.rate_encode(x))
     e = snn_ref.bernoulli_lfsr(r_q, args.runs, args.seed)
-    _, counts_ref, _ = snn_ref.fixed_forward(q, r_q, e)
+    logits_ref, counts_ref, _ = snn_ref.fixed_forward(q, r_q, e)
     logits_f, _ = snn_ref.float_forward(p, x, e)
 
-    ok = 0
-    hits_fix = hits_float = 0
-    with serial.Serial(args.port, args.baud, timeout=10) as ser:
+    ok = hits_hw = hits_f = 0
+    with serial.Serial(args.port, baud, timeout=10) as ser:
         ser.reset_input_buffer()
+        if args.mode == "full" and not args.skip_load:
+            words = w_out_words(q)
+            load_sdram(ser, words)
+            if not check_sdram(ser, words):
+                return
         for b in range(len(x)):
             seed_b = (args.seed + b) & snn_ref.MASK32
-            frame = bytes([0xA5]) + struct.pack("<I", seed_b) + b"".join(
-                struct.pack("<H", int(v)) for v in r_q[b])
+            rates = b"".join(struct.pack("<H", int(v)) for v in r_q[b])
             t0 = time.time()
-            ser.write(frame)
-            resp = ser.read(802)
-            dt = time.time() - t0
-            if len(resp) != 802 or resp[0] != 0x5A:
-                print(f"Probe {b}: keine/unvollstaendige Antwort ({len(resp)} Bytes). "
-                      "Port, Baudrate und geladenen Bitstream pruefen.")
-                continue
-            counts = np.frombuffer(resp[1:801], dtype=np.uint8).astype(np.int64)
-            if (int(counts.sum()) & 0xFF) != resp[801]:
-                print(f"Probe {b}: Pruefsummenfehler")
-                continue
-            diff = int((counts != counts_ref[b]).sum())
-            logits = counts @ q.w_out.T + q.b_out
-            cls_hw, cls_f = int(logits.argmax()), int(logits_f[b].argmax())
-            ok += diff == 0
-            line = (f"Probe {b}: {'OK ' if diff == 0 else 'ABWEICHUNG'} ({diff} Zaehler verschieden), "
-                    f"Spikes {int(counts.sum())}, Klasse Board {cls_hw} / Float {cls_f}, {dt * 1000:.0f} ms")
+            if args.mode == "full":
+                ser.write(bytes([0xA5]) + b"C" + struct.pack("<I", seed_b) + rates)
+                resp = read_exact(ser, 2 + 2 + 4 + 4 * q.w_out.shape[0] + 4)
+                dt = time.time() - t0
+                if resp[:2] != b"\x5aC":
+                    print(f"Probe {b}: falsche Antwort")
+                    continue
+                cls_hw = struct.unpack("<H", resp[2:4])[0]
+                logits = np.frombuffer(resp[8:-4], dtype="<i4").astype(np.int64)
+                if (int(logits.astype(np.uint32).astype(np.uint64).sum()) & 0xFFFFFFFF) != \
+                        struct.unpack("<I", resp[-4:])[0]:
+                    print(f"Probe {b}: Pruefsummenfehler")
+                    continue
+                diff = int((logits != logits_ref[b]).sum())
+                good = diff == 0 and cls_hw == int(logits_ref[b].argmax())
+                what = f"{diff} Logits verschieden"
+            else:
+                ser.write(bytes([0xA5]) + struct.pack("<I", seed_b) + rates)
+                resp = read_exact(ser, 802)
+                dt = time.time() - t0
+                counts = np.frombuffer(resp[1:801], dtype=np.uint8).astype(np.int64)
+                if resp[0] != 0x5A or (int(counts.sum()) & 0xFF) != resp[801]:
+                    print(f"Probe {b}: falsche Antwort oder Pruefsummenfehler")
+                    continue
+                diff = int((counts != counts_ref[b]).sum())
+                cls_hw = int((counts @ q.w_out.T + q.b_out).argmax())
+                good = diff == 0
+                what = f"{diff} Zaehler verschieden"
+            cls_f = int(logits_f[b].argmax())
+            ok += good
+            line = (f"Probe {b}: {'OK ' if good else 'ABWEICHUNG'} ({what}), Klasse Board {cls_hw} / "
+                    f"Float {cls_f}, {dt * 1000:.0f} ms")
             if y is not None:
-                hits_fix += cls_hw == y[b]
-                hits_float += cls_f == y[b]
+                hits_hw += cls_hw == y[b]
+                hits_f += cls_f == y[b]
                 line += f", Label {int(y[b])}"
             print(line)
     print(f"\n{ok} von {len(x)} Proben bitgenau wie snn_ref.py")
     if y is not None:
-        print(f"Genauigkeit: Board {hits_fix / len(x):.1%}, Float {hits_float / len(x):.1%}")
+        print(f"Genauigkeit: Board {hits_hw / len(x):.1%}, Float {hits_f / len(x):.1%}")
 
 
 if __name__ == "__main__":

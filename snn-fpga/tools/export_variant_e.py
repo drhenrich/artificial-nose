@@ -4,9 +4,9 @@
     python3 export_variant_e.py model.safetensors connectome_mask.npz --out build/variant_e [--tv 4]
 
 Speicherabbilder (Formate siehe VARIANTE-E.md):
-    ptr.hex      2*H+1 x 14 Bit  Listenstart je (post i, praesyn. Haelfte h), Index 2*i+h (BSRAM)
-    syn.hex      N x 18 Bit      {pre_lokal[17:9], w_rec[8:0]}, pre = h*HALF + pre_lokal (BSRAM)
-    w_in.hex     H*26 x 18 Bit   {w_in[i,2c+1] in [17:9], w_in[i,2c] in [8:0]} (BSRAM)
+    pp.hex       H+1 x 28 Bit    {Start syn1[27:14], Start syn0[13:0]} je Ziel-Neuron (BSRAM)
+    syn0/1.hex   N0/N1 x 18 Bit  {pre_lokal[17:9], w_rec[8:0]}; syn0: pre = pre_lokal, syn1: HALF + pre_lokal
+    win0/1.hex   H*13 x 18 Bit   Takt c: win0 = {w_in[i,4c+1], w_in[i,4c]}, win1 = {w_in[i,4c+3], w_in[i,4c+2]}
     b_out.hex    K x 32 Bit      Bias in Readout-Integer-Skala (BSRAM)
     w_out.hex    K*H/4 x 32 Bit  4 x int8 pro Wort, Byte n = w_out[c, 4j+n], klassenweise (SDRAM)
     params.vh    Verilog-Parameter
@@ -54,21 +54,30 @@ def export_memories(q, out, bits_in, bits_rec):
     h, n_in = q.w_in.shape
     k = q.w_out.shape[0]
     half = h // 2
-    assert h % 2 == 0 and half <= 512 and n_in % 2 == 0 and h % 4 == 0
+    nq = n_in // 4                      # w_in-Takte pro Neuron (4 Gewichte pro Takt)
+    assert h % 4 == 0 and half <= 512 and n_in % 4 == 0
     assert bits_in <= 9 and bits_rec <= 9
 
-    # Rekurrent: pro Ziel-Neuron i zwei Listen (Quellen 0..HALF-1, HALF..H-1), nur Gewichte != 0
-    ptr, syn = [0], []
+    # Rekurrent: zwei Speicher (Quellen 0..HALF-1 und HALF..H-1), je nach Ziel-Neuron sortiert,
+    # nur Gewichte != 0. pp[i] = {Start in syn1, Start in syn0}, pp[H] = Enden.
+    syn = ([], [])
+    pp = []
     for i in range(h):
+        pp.append((len(syn[1]) << 14) | len(syn[0]))
         for hh in range(2):
             for j in np.nonzero(q.w_rec[i, hh * half:(hh + 1) * half])[0]:
-                syn.append((int(j) << 9) | tc(q.w_rec[i, hh * half + j], 9))
-            ptr.append(len(syn))
-    write_hex(out / "ptr.hex", ptr, 14)
-    write_hex(out / "syn.hex", syn, 18)
-    w_in_words = [(tc(q.w_in[i, 2 * c + 1], 9) << 9) | tc(q.w_in[i, 2 * c], 9)
-                  for i in range(h) for c in range(n_in // 2)]
-    write_hex(out / "w_in.hex", w_in_words, 18)
+                syn[hh].append((int(j) << 9) | tc(q.w_rec[i, hh * half + j], 9))
+    pp.append((len(syn[1]) << 14) | len(syn[0]))
+    assert max(len(syn[0]), len(syn[1])) < 1 << 14
+    write_hex(out / "pp.hex", pp, 28)
+    write_hex(out / "syn0.hex", syn[0], 18)
+    write_hex(out / "syn1.hex", syn[1], 18)
+
+    # Eingang: Takt c liest win0[i*nq+c] = Gewichte 4c, 4c+1 und win1[i*nq+c] = 4c+2, 4c+3
+    win = [[(tc(q.w_in[i, 4 * c + 2 * b + 1], 9) << 9) | tc(q.w_in[i, 4 * c + 2 * b], 9)
+            for i in range(h) for c in range(nq)] for b in range(2)]
+    write_hex(out / "win0.hex", win[0], 18)
+    write_hex(out / "win1.hex", win[1], 18)
     write_hex(out / "b_out.hex", q.b_out, 32)
     w_out_words = [sum(tc(q.w_out[c, 4 * j + n], 8) << (8 * n) for n in range(4))
                    for c in range(k) for j in range(h // 4)]
@@ -79,7 +88,8 @@ localparam N_HID   = {h};
 localparam HALF    = {half};
 localparam N_IN    = {n_in};
 localparam N_CLS   = {k};
-localparam N_SYN   = {len(syn)};
+localparam N_SYN0  = {max(len(syn[0]), 1)};
+localparam N_SYN1  = {max(len(syn[1]), 1)};
 localparam T_STEPS = {snn_ref.T_STEPS};
 localparam N_RUNS  = {q.runs};
 localparam FRAC    = {q.frac};
@@ -91,14 +101,16 @@ localparam V_TH    = {1 << q.frac};
 """)
 
     # Rueckleseprobe
-    p_back, s_back = read_hex(out / "ptr.hex"), read_hex(out / "syn.hex")
+    pb = read_hex(out / "pp.hex")
+    sb = (read_hex(out / "syn0.hex"), read_hex(out / "syn1.hex"))
     w_rec_back = np.zeros_like(q.w_rec)
     for i in range(h):
         for hh in range(2):
-            for word in s_back[p_back[2 * i + hh]:p_back[2 * i + hh + 1]]:
+            lo, hi = (int(pb[i]) >> (14 * hh)) & 0x3FFF, (int(pb[i + 1]) >> (14 * hh)) & 0x3FFF
+            for word in sb[hh][lo:hi]:
                 w_rec_back[i, hh * half + (word >> 9)] = sx(word, 9)
-    wi = read_hex(out / "w_in.hex")
-    w_in_back = np.array([[sx(wi[i * (n_in // 2) + kk // 2] >> (9 * (kk % 2)), 9) for kk in range(n_in)]
+    wb = (read_hex(out / "win0.hex"), read_hex(out / "win1.hex"))
+    w_in_back = np.array([[sx(wb[(kk >> 1) & 1][i * nq + kk // 4] >> (9 * (kk & 1)), 9) for kk in range(n_in)]
                           for i in range(h)])
     wo = read_hex(out / "w_out.hex")
     w_out_back = np.array([[sx(wo[c * (h // 4) + ii // 4] >> (8 * (ii % 4)), 8) for ii in range(h)]
@@ -107,23 +119,31 @@ localparam V_TH    = {1 << q.frac};
     assert (w_rec_back == q.w_rec).all() and (w_in_back == q.w_in).all()
     assert (w_out_back == q.w_out).all() and (b_back == q.b_out).all()
 
+    nz = q.w_rec != 0
+    f0, f1 = nz[:, :half].sum(1), nz[:, half:].sum(1)
+    cyc = (np.maximum(nq, np.maximum(f0, f1)) + 5).sum() + n_in
     budget = [
-        ("syn (rekurrente Synapsen)", blocks(len(syn), 18)),
-        ("ptr (Listenanfaenge)", blocks(len(ptr), 14)),
-        ("w_in", blocks(len(w_in_words), 18)),
+        ("syn0 + syn1 (rekurrente Synapsen)", blocks(len(syn[0]), 18) + blocks(len(syn[1]), 18)),
+        ("pp (Listenanfaenge)", blocks(len(pp), 28)),
+        ("win0 + win1", 2 * blocks(h * nq, 18)),
         ("v (16 Bit)", blocks(h, 16)),
         ("i_syn (16 Bit)", blocks(h, 16)),
         ("counts (4 x 7 Bit pro Wort)", blocks(h // 4, 28)),
         ("b_out (32 Bit)", blocks(k, 32)),
     ]
-    print(f"Synapsen {len(syn)} (von {int((q.w_rec != 0).sum())} != 0 nach Quantisierung)")
+    print(f"Synapsen {len(syn[0])} + {len(syn[1])} (Quellen 0..{half - 1} / {half}..{h - 1})")
     print("BSRAM-Plan (Bloecke a 18 Kbit):")
     for name, b in budget:
-        print(f"  {name:30s} {b:3d}")
+        print(f"  {name:34s} {b:3d}")
     used = sum(b for _, b in budget)
-    print(f"  {'Summe':30s} {used:3d} von {N_BLOCKS}" + ("  OK" if used <= N_BLOCKS else "  ZU VIEL"))
+    print(f"  {'Summe':34s} {used:3d} von {N_BLOCKS}" + ("  OK" if used <= N_BLOCKS else "  ZU VIEL"))
     print(f"SDRAM: w_out {k * h / 1024:.0f} KiB von 8 MiB")
+    print(f"Geschaetzt {cyc} Takte pro Zeitschritt, {cyc * T_RUN(q) / 1e3:.0f}k pro Inferenz ohne Readout")
     print("Rueckleseprobe OK")
+
+
+def T_RUN(q):
+    return snn_ref.T_STEPS * q.runs
 
 
 def export_testvectors(q, out, n, seed):
