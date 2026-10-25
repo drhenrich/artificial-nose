@@ -336,14 +336,17 @@ openFPGALoader -b tangnano20k  (10 Boards über USB-Hub, per Seriennummer adress
 
 | Variante | Aufteilung | Nutzen |
 |---|---|---|
-| **A – Referenz (empfohlen)** | B0 IO, B1–B8 je 100 Neuronen, B9 Readout | Einfach, alles im BSRAM, identische Neuronen-Boards |
+| A – Ring | B0 IO, B1–B8 je 100 Neuronen, B9 Readout | Einfach, alles im BSRAM, identische Neuronen-Boards |
 | B – Stereo-Riechen | 2 Sensorköpfe links/rechts, 2 Netzinstanzen à 4 Boards (200 Neuronen/Board), B0 und B9 gemeinsam | Fliegen vergleichen beide Antennen und erkennen so die Richtung. Das Links/Rechts-Signal steuert direkt die Drehrate |
 | C – Redundanz | 3 Instanzen à 3 Boards + 1 Voter | Mehrheitsentscheid gegen Störungen (Vibration, EMV), Ensemble über verschiedene Seeds |
 | D – Größeres Konnektom | alle 10 Boards als Neuronen-Boards, bis ~3.000 Neuronen mit SDRAM | Wenn später ein größerer FlyWire-Ausschnitt (z. B. alle ≈ 2.000 Kenyonzellen) genutzt werden soll |
-| E – Ein Board | alle 800 Neuronen auf einem Board (≈ 560 Kbit BSRAM für rekurrent + `w_in`), `w_out` 4,4 Mbit im eingebetteten SDRAM | Schnellster Weg zum ersten lauffähigen Gesamtmodell in Phase 2. Ein Zeitschritt dauert dann ≈ 8× länger (≈ 0,2 ms), immer noch weit schneller als die Sensoren |
+| **E – Ein Board (empfohlen)** | alle 800 Neuronen auf einem Board, 41 von 46 BSRAM-Blöcken, `w_out` im eingebetteten SDRAM. **Ausgearbeitet in [VARIANTE-E.md](VARIANTE-E.md)** | Kein Ring, keine Synchronisation. ≈ 24 ms pro Klassifikation (≈ 40/s), weit schneller als die Sensoren |
+| **F – E-Cluster** | bis zu 10 unabhängige Kopien von E an einem SPI-Bus | Parallele Monte-Carlo-Läufe (≈ 5 ms), Stereo oder Redundanz, ohne Ring |
 
-Phase 2 mit **E** (ein Board, volles Modell) beginnen, dann auf **A** verteilen. Ist A lauffähig, ist der Wechsel zu **B** reine Konfigurationssache, denn
-Kern und Ring sind gleich.
+**Empfehlung (aktualisiert):** Mit den echten Modelldaten (2,34 % Dichte) ist **E** die
+Zielarchitektur, **F** nutzt die übrigen Boards. Der Ring aus **A** lohnt sich erst, wenn das Netz
+nicht mehr auf einen Chip passt (Variante D). Die Abschnitte 4.2–5 beschreiben A und bleiben
+dafür gültig, die Rechenvorschrift (4.3, 4.5) gilt für alle Varianten.
 
 ---
 
