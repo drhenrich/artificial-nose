@@ -63,9 +63,13 @@ def load_mask(path):
 
 
 def quant_error(w, bits):
-    scale = np.abs(w).max() / (2 ** (bits - 1) - 1) or 1.0
-    q = np.round(w / scale)
-    return scale, float(np.abs(q * scale - w).mean() / (np.abs(w).mean() or 1.0))
+    """Zweierpotenz-Skala (Shift statt Multiplikation in der Hardware); w = nur relevante Eintraege."""
+    w = w[w != 0]
+    if w.size == 0:
+        return 0, 0.0
+    frac = int(np.floor(np.log2((2 ** (bits - 1) - 1) / np.abs(w).max())))
+    q = np.clip(np.round(w * 2.0 ** frac), -2 ** (bits - 1), 2 ** (bits - 1) - 1)
+    return frac, float(np.abs(q / 2.0 ** frac - w).mean() / np.abs(w).mean())
 
 
 def main():
@@ -80,12 +84,23 @@ def main():
     print("== Tensoren ==")
     for name, t in tensors.items():
         line = f"{name:40s} {str(t.shape):16s} {t.dtype}"
-        if t.dtype.kind == "f" and t.size > 1:
-            _, err = quant_error(t.astype(np.float32), args.wbits)
-            line += f"  rel. INT{args.wbits}-Fehler {err:.3%}"
+        if t.dtype.kind == "f" and t.size > 1 and name not in ("recurrent", "rec_mask", "rec_sign"):
+            frac, err = quant_error(t.astype(np.float32), args.wbits)
+            line += f"  INT{args.wbits} mit 2^-{frac}: rel. Fehler {err:.3%}"
         print(line)
 
     raw = load_mask(args.mask)
+    if "recurrent" in tensors:  # MaskedRecurrentLIFSNN: W_eff = recurrent * mask * sign
+        w_eff = tensors["recurrent"].astype(np.float32) * (raw != 0) * np.sign(raw)
+        nz = raw != 0
+        flipped = int((np.sign(w_eff[nz]) != np.sign(raw[nz])).sum())
+        frac, err = quant_error(w_eff, args.wbits)
+        print(f"\n== Effektive rekurrente Gewichte ==\n|w| min/mean/max: {np.abs(w_eff[nz]).min():.4g}/"
+              f"{np.abs(w_eff[nz]).mean():.4g}/{np.abs(w_eff[nz]).max():.4g}  "
+              f"INT{args.wbits} mit 2^-{frac}: rel. Fehler {err:.3%}")
+        print(f"Gegen das Konnektom-Vorzeichen gekippt: {flipped}/{int(nz.sum())} ({flipped / max(int(nz.sum()), 1):.1%})"
+              " - recurrent ist nicht auf >=0 beschraenkt")
+        raw = w_eff
     mask = raw != 0
     n = mask.shape[0]
     nnz = int(mask.sum())
@@ -97,7 +112,7 @@ def main():
 
     exc, inh = int((raw > 0).sum()), int((raw < 0).sum())
     if inh:
-        print(f"Vorzeichen: {exc} erregend, {inh} hemmend ({inh / nnz:.1%})")
+        print(f"Vorzeichen (effektiv): {exc} erregend, {inh} hemmend ({inh / nnz:.1%})")
         mixed = sum(1 for j in range(n) if (raw[:, j] > 0).any() and (raw[:, j] < 0).any())
         print(f"Dale-Prinzip: {n - mixed}/{n} praesyn. Neuronen mit einheitlichem Vorzeichen"
               + (" -> Vorzeichen pro Neuron speichern" if mixed == 0 else " -> Vorzeichen pro Synapse speichern"))
