@@ -216,7 +216,7 @@ seine eigenen Neuronen:
 
 ```
 logit_partial[c] = Σ_i count[i] · W_out'[i,c]      (100·K MACs, Multiplizierer)
-W_out' = W_out / 20      (Mittelwert über 20 Schritte, offline eingerechnet; Bias addiert B9)
+W_out' = W_out / (20·M)  (Mittel über 20 Schritte und M = 5 Monte-Carlo-Läufe, offline eingerechnet; Bias addiert B9)
 ```
 
 Die Teilsummen laufen über den Ring nach B9 und werden dort addiert. Damit braucht kein Board
